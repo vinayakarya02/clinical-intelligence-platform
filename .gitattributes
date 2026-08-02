@@ -1,0 +1,15 @@
+# Normalise line endings in the repository to LF regardless of the authoring platform.
+# Without this, a Windows checkout commits CRLF and every file shows as fully rewritten
+# in diffs produced on Linux (and in CI), which buries real changes.
+* text=auto eol=lf
+
+# Shell scripts and Makefiles break outright with CRLF.
+*.sh text eol=lf
+Makefile text eol=lf
+
+# Binary formats must never be line-ending converted.
+*.pdf binary
+*.docx binary
+*.png binary
+*.jpg binary
+*.ico binary

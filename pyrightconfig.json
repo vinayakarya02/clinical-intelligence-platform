@@ -1,0 +1,25 @@
+{
+  "include": [
+    "libs/cip_core/src",
+    "services/ingestion/src"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    ".venv",
+    "migrations/versions"
+  ],
+  "extraPaths": [
+    "libs/cip_core/src",
+    "services/ingestion/src"
+  ],
+  "pythonVersion": "3.11",
+  "typeCheckingMode": "standard",
+  "reportMissingImports": "error",
+  "reportMissingTypeStubs": "none",
+  "reportUnknownMemberType": "none",
+  "reportUnknownArgumentType": "none",
+  "reportUnknownVariableType": "none",
+  "reportPrivateUsage": "none",
+  "venvPath": ".",
+  "venv": ".venv"
+}

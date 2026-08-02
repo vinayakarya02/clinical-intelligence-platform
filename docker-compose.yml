@@ -1,0 +1,56 @@
+# Local development backing services for Phase 1.
+# Production topology is Kubernetes + managed data services — see
+# docs/deployment/deployment-architecture.md. This file exists so a developer can
+# run the ingestion pipeline end-to-end without cloud credentials.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: cip
+      POSTGRES_USER: cip
+      POSTGRES_PASSWORD: change-me
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cip -d cip"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Phase 1 only establishes connectivity and health-checks against Neo4j.
+  # Graph construction is Phase 2 (docs/roadmap/implementation-roadmap.md).
+  neo4j:
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: neo4j/change-me
+      NEO4J_server_memory_pagecache_size: 256M
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres-data:
+  mongo-data:
+  neo4j-data:

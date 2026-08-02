@@ -1,0 +1,746 @@
+openapi: 3.0.3
+info:
+  title: Clinical Intelligence Platform API
+  version: 0.1.0-phase0
+  description: >
+    Phase 0 design artifact. Defines the target external API surface for the
+    Clinical Intelligence Platform: document ingestion, hybrid retrieval,
+    conversational AI, and analytics. All endpoints require an authenticated,
+    tenant-scoped bearer token issued by the Identity & Access Service
+    (see docs/architecture/06-security-compliance.md §3). No endpoint accepts
+    or returns data across tenant boundaries.
+
+
+    **Tenant identification**: the server URL's `tenant_slug` and the bearer
+    token's tenant claim MUST match. A mismatch is rejected with `403
+    tenant_mismatch` before any handler logic runs — this is a validated
+    invariant, not an assumed one (see docs/design/phase-0-architecture-review.md
+    finding D19).
+
+
+    **Versioning**: breaking changes are introduced as a new path-versioned
+    major (`/v2`), never as an in-place breaking change to `/v1`. A version
+    scheduled for removal is marked with a `Deprecation` response header and a
+    `Sunset` header carrying the removal date at least 12 months before
+    removal; deprecation status is also listed in the platform changelog, not
+    only in headers (docs/design/phase-0-architecture-review.md finding D16).
+
+
+    **Idempotency**: all POST endpoints that create a resource accept an
+    `Idempotency-Key` request header. Replaying the same key with the same
+    request body returns the original response rather than creating a
+    duplicate resource — required for safe client-side retries in a
+    distributed ingestion pipeline (finding D17).
+
+
+    **Rate limiting**: every endpoint may return `429` with `Retry-After` and
+    `X-RateLimit-*` headers per the schema in `components.headers` — limits
+    are enforced at the API Gateway per tenant and per user (finding D23).
+
+
+    **Errors**: all error responses use the RFC 7807 Problem Details shape
+    (`components.schemas.Error`) rather than an ad hoc `{code, message}` pair
+    (finding D21).
+  contact:
+    name: Platform Architecture
+servers:
+  - url: https://api.{tenant_slug}.cip.example.com/v1
+    variables:
+      tenant_slug:
+        default: demo
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Ingestion
+  - name: Retrieval
+  - name: Conversational AI
+  - name: Analytics
+  - name: Admin
+  - name: Access
+
+paths:
+  /documents:
+    post:
+      tags: [Ingestion]
+      summary: Register a document for ingestion
+      description: >
+        Registers a document (already uploaded to the tenant's object storage
+        prefix, or provided inline for small payloads) and enqueues it for
+        the ingestion pipeline (docs/architecture/02-rag-hybrid-retrieval.md §1).
+        For bulk EHR exports, prefer `POST /documents/batch`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DocumentIngestionRequest'
+      responses:
+        '202':
+          description: Accepted for asynchronous ingestion
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Document'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+    get:
+      tags: [Ingestion]
+      summary: List documents visible to the caller's scope
+      parameters:
+        - $ref: '#/components/parameters/PatientIdFilter'
+        - $ref: '#/components/parameters/DocumentTypeFilter'
+        - $ref: '#/components/parameters/PageCursor'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentList'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /documents/batch:
+    post:
+      tags: [Ingestion]
+      summary: Register multiple documents for ingestion in one call
+      description: >
+        Bulk registration for EHR export batches — the platform's stated
+        primary ingestion pattern, previously only servable one document per
+        round trip (docs/design/phase-0-architecture-review.md finding D18).
+        Supports partial success: the response reports per-item status rather
+        than failing the whole batch for one bad item.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  maxItems: 5000
+                  items:
+                    $ref: '#/components/schemas/DocumentIngestionRequest'
+      responses:
+        '202':
+          description: Accepted — per-item results below
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        index: { type: integer }
+                        status: { type: string, enum: [accepted, rejected] }
+                        document: { $ref: '#/components/schemas/Document' }
+                        error: { $ref: '#/components/schemas/Error' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /documents/fhir-bulk-import:
+    post:
+      tags: [Ingestion]
+      summary: Import a FHIR Bulk Data Access ($export/$import) NDJSON manifest
+      description: >
+        Accepts a manifest pointing at NDJSON files produced by a source
+        EHR's FHIR Bulk Data $export operation — the pattern real EHR
+        integrations (Epic, Cerner) use for bulk feeds, distinct from
+        registering one `fhir_bundle` document at a time
+        (docs/design/phase-0-architecture-review.md finding D18).
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [manifestUrl]
+              properties:
+                manifestUrl:
+                  type: string
+                  description: URL to the Bulk Data $export manifest (kickoff response `output` array)
+                sourceSystem: { type: string }
+      responses:
+        '202':
+          description: Import job accepted; progress reported via GET /documents/fhir-bulk-import/{jobId}
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobId: { type: string, format: uuid }
+                  status: { type: string, enum: [pending, in_progress, completed, failed] }
+
+  /documents/{documentId}:
+    get:
+      tags: [Ingestion]
+      summary: Get document metadata and ingestion status
+      parameters:
+        - $ref: '#/components/parameters/DocumentId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Document'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /documents/{documentId}/reprocess:
+    post:
+      tags: [Ingestion]
+      summary: Force re-ingestion (e.g. after an embedding model upgrade)
+      parameters:
+        - $ref: '#/components/parameters/DocumentId'
+      responses:
+        '202':
+          description: Re-ingestion enqueued
+
+  /webhooks:
+    post:
+      tags: [Ingestion]
+      summary: Subscribe to async ingestion/job lifecycle events
+      description: >
+        Notifies a tenant-provided HTTPS endpoint on ingestion-status
+        transitions (`document.embedded`, `document.graph_indexed`,
+        `document.failed`, `fhir_bulk_import.completed`, etc.) so clients
+        don't have to poll `GET /documents/{id}`
+        (docs/design/phase-0-architecture-review.md finding D22). Payloads are
+        signed (HMAC) with a per-subscription secret returned at creation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [targetUrl, events]
+              properties:
+                targetUrl: { type: string }
+                events:
+                  type: array
+                  items:
+                    type: string
+                    enum: [document.embedded, document.graph_indexed, document.failed, fhir_bulk_import.completed]
+      responses:
+        '201':
+          description: Subscription created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  webhookId: { type: string, format: uuid }
+                  signingSecret: { type: string, description: Shown once at creation only }
+
+    get:
+      tags: [Ingestion]
+      summary: List webhook subscriptions
+      responses:
+        '200':
+          description: OK
+
+  /retrieval/query:
+    post:
+      tags: [Retrieval]
+      summary: Hybrid retrieval query (vector + keyword + graph + structured)
+      description: >
+        Direct access to the Retrieval & Orchestration Service
+        (docs/architecture/02-rag-hybrid-retrieval.md §2). Intended for
+        programmatic/integration use; the Conversational AI endpoints below
+        call this same service internally. Returns an empty `results` array
+        with `routingDecision.contextFound = false` rather than fabricating
+        results when nothing clears the relevance floor (§2.4 of that doc) —
+        callers should treat an empty result as "no evidence," not an error.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetrievalRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetrievalResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /chat/sessions:
+    post:
+      tags: [Conversational AI]
+      summary: Create a new chat session
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatSessionCreateRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatSession'
+
+  /chat/sessions/{sessionId}/messages:
+    post:
+      tags: [Conversational AI]
+      summary: Send a message and receive a grounded, cited response
+      description: >
+        See docs/architecture/04-conversational-ai.md for the request
+        lifecycle, grounding, numeric-verification, and guardrail behavior.
+        Supports streaming via `Accept: text/event-stream`; each SSE event is
+        a JSON-encoded partial `ChatMessageResponse` with `content` as the
+        incremental delta, terminated by an event with `done: true`.
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatMessageRequest'
+      responses:
+        '200':
+          description: Grounded response with inline citations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatMessageResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          description: >
+            Response withheld — either the caller's access scope excludes the
+            only relevant evidence, or no retrieval path returned any context
+            above the relevance floor and the no-evidence gate suppressed
+            generation entirely (docs/architecture/02-rag-hybrid-retrieval.md §2.4).
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+    get:
+      tags: [Conversational AI]
+      summary: Get message history for a session
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ChatMessage'
+
+  /access/break-glass:
+    post:
+      tags: [Access]
+      summary: Request emergency ("break-glass") elevated access to a patient record
+      description: >
+        Grants short-lived elevated scope outside the caller's normal panel,
+        for emergency clinical situations
+        (docs/architecture/06-security-compliance.md §3). Every call is
+        logged to the audit log at issuance with heightened severity and
+        notifies the tenant's compliance contact — this is not a silent scope
+        upgrade (docs/design/phase-0-architecture-review.md finding D8).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [patientId, justification]
+              properties:
+                patientId: { type: string, format: uuid }
+                justification: { type: string, description: Free-text reason, mandatory, stored verbatim in the audit record }
+      responses:
+        '201':
+          description: Elevated grant issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  grantId: { type: string, format: uuid }
+                  expiresAt: { type: string, format: date-time, description: Fixed short window, default 4 hours }
+
+  /analytics/metrics/{metricKey}:
+    get:
+      tags: [Analytics]
+      summary: Query a predefined analytics metric
+      description: >
+        Parameterized, RBAC-scoped query templates only — no free-form
+        SQL/Cypher is exposed (docs/architecture/05-analytics-dashboard.md §4).
+      parameters:
+        - name: metricKey
+          in: path
+          required: true
+          schema:
+            type: string
+            example: adverse_event_trend
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: groupBy
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricResult'
+
+  /analytics/reports:
+    get:
+      tags: [Analytics]
+      summary: List scheduled/available reports
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Report'
+
+  /admin/tenants/{tenantId}/audit-log:
+    get:
+      tags: [Admin]
+      summary: Query the immutable audit log for this tenant
+      description: Requires `admin` role. See docs/architecture/06-security-compliance.md §5.
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: actorUserId
+          in: query
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditLogEntry'
+
+  /admin/tenants/{tenantId}/offboard:
+    post:
+      tags: [Admin]
+      summary: Begin tenant offboarding (data export + verified deletion)
+      description: >
+        Transitions `tenants.status` to `offboarding` and starts the runbook
+        in docs/operations/tenant-lifecycle.md — previously the schema implied
+        this lifecycle existed with no operational process behind it
+        (docs/design/phase-0-architecture-review.md finding A5).
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '202':
+          description: Offboarding started
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        Short-lived, tenant- and scope-bound token issued by the Identity &
+        Access Service after OIDC/SAML federation with the tenant's IdP.
+
+  parameters:
+    DocumentId:
+      name: documentId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SessionId:
+      name: sessionId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    PatientIdFilter:
+      name: patientId
+      in: query
+      schema: { type: string, format: uuid }
+    DocumentTypeFilter:
+      name: documentType
+      in: query
+      schema: { type: string }
+    PageCursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Replaying the same key + body returns the original response instead of creating a duplicate.
+      schema: { type: string }
+
+  headers:
+    RetryAfter:
+      description: Seconds to wait before retrying (429 responses)
+      schema: { type: integer }
+    RateLimitLimit:
+      description: Request quota for the current window
+      schema: { type: integer }
+    RateLimitRemaining:
+      description: Requests remaining in the current window
+      schema: { type: integer }
+    RateLimitReset:
+      description: Unix timestamp when the window resets
+      schema: { type: integer }
+    Deprecation:
+      description: Present on a deprecated API version; RFC 8594-style deprecation marker
+      schema: { type: string }
+    Sunset:
+      description: Date after which a deprecated API version is removed (RFC 8594)
+      schema: { type: string, format: date }
+
+  responses:
+    BadRequest:
+      description: Malformed request
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Caller's scope does not permit this action or resource
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Resource not found (or not visible to caller's scope)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    TooManyRequests:
+      description: Rate limit exceeded
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
+        X-RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
+        X-RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+        X-RateLimit-Reset: { $ref: '#/components/headers/RateLimitReset' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Error:
+      type: object
+      description: RFC 7807 Problem Details (docs/design/phase-0-architecture-review.md finding D21)
+      properties:
+        type: { type: string, description: URI identifying the error category }
+        title: { type: string, description: Short, human-readable summary }
+        status: { type: integer, description: HTTP status code }
+        detail: { type: string, description: Human-readable explanation specific to this occurrence }
+        instance: { type: string, description: URI identifying this specific occurrence }
+
+    DocumentIngestionRequest:
+      type: object
+      required: [objectStorageUri, documentType, sourceSystem]
+      properties:
+        objectStorageUri: { type: string }
+        documentType:
+          type: string
+          enum: [discharge_summary, lab_report, radiology_note, trial_protocol,
+                 adverse_event_report, literature, guideline, hl7v2_message,
+                 fhir_bundle, dicom_study]
+        sourceSystem: { type: string }
+        patientId: { type: string, format: uuid }
+        effectiveDate: { type: string, format: date }
+
+    Document:
+      type: object
+      properties:
+        documentId: { type: string, format: uuid }
+        documentType: { type: string }
+        ingestionStatus:
+          type: string
+          enum: [pending, parsed, extracted, embedded, graph_indexed, failed]
+        deidentificationStatus:
+          type: string
+          enum: [not_deidentified, safe_harbor, expert_determination]
+        createdAt: { type: string, format: date-time }
+
+    DocumentList:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Document' }
+        nextCursor: { type: string, nullable: true }
+
+    RetrievalRequest:
+      type: object
+      required: [query]
+      properties:
+        query: { type: string }
+        patientId: { type: string, format: uuid, nullable: true }
+        mode:
+          type: string
+          enum: [auto, local_graph, global_graph, vector_only, keyword_only, structured_only]
+          default: auto
+        maxResults: { type: integer, default: 10 }
+
+    RetrievalResult:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              sourceType: { type: string, enum: [document_chunk, graph_entity, community_summary, structured_fact] }
+              id: { type: string }
+              text: { type: string }
+              score: { type: number, format: float }
+              citation:
+                type: object
+                properties:
+                  documentId: { type: string, format: uuid, nullable: true }
+                  entityId: { type: string, nullable: true }
+        routingDecision:
+          type: object
+          properties:
+            intents: { type: array, items: { type: string }, description: Query intents matched, per docs/architecture/02-rag-hybrid-retrieval.md §2.1 }
+            pathsDispatched: { type: array, items: { type: string } }
+            contextFound: { type: boolean, description: false when the no-evidence gate suppressed generation }
+
+    ChatSessionCreateRequest:
+      type: object
+      properties:
+        activePatientId: { type: string, format: uuid, nullable: true }
+
+    ChatSession:
+      type: object
+      properties:
+        sessionId: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+
+    ChatMessageRequest:
+      type: object
+      required: [content]
+      properties:
+        content: { type: string }
+
+    ChatMessage:
+      type: object
+      properties:
+        messageId: { type: string, format: uuid }
+        role: { type: string, enum: [user, assistant, system] }
+        content: { type: string }
+        citations:
+          type: array
+          items:
+            type: object
+            properties:
+              documentId: { type: string, format: uuid, nullable: true }
+              entityId: { type: string, nullable: true }
+              excerpt: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    ChatMessageResponse:
+      allOf:
+        - $ref: '#/components/schemas/ChatMessage'
+        - type: object
+          properties:
+            groundingStatus:
+              type: string
+              enum: [fully_grounded, partially_grounded, withheld]
+            numericVerification:
+              type: string
+              enum: [not_applicable, verified, mismatch_flagged]
+              description: Result of the deterministic numeric-value check, docs/architecture/04-conversational-ai.md §3
+
+    MetricResult:
+      type: object
+      properties:
+        metricKey: { type: string }
+        series:
+          type: array
+          items:
+            type: object
+            properties:
+              label: { type: string }
+              value: { type: number }
+              period: { type: string }
+
+    Report:
+      type: object
+      properties:
+        reportId: { type: string, format: uuid }
+        name: { type: string }
+        schedule: { type: string, description: Cron expression or 'on_demand' }
+        lastRunAt: { type: string, format: date-time, nullable: true }
+
+    AuditLogEntry:
+      type: object
+      properties:
+        auditId: { type: integer, format: int64 }
+        actorUserId: { type: string, format: uuid, nullable: true }
+        actorService: { type: string, nullable: true }
+        action: { type: string }
+        resourceType: { type: string }
+        resourceId: { type: string, nullable: true }
+        phiAccessed: { type: boolean }
+        occurredAt: { type: string, format: date-time }

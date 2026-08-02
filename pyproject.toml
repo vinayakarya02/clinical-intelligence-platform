@@ -1,0 +1,119 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "clinical-intelligence-platform"
+version = "0.1.0"
+description = "Clinical Intelligence & Analytics Platform — Phase 1: Document Intelligence pipeline"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "python-multipart>=0.0.17",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    "motor>=3.6",
+    "neo4j>=5.26",
+    "structlog>=24.4",
+    "python-jose[cryptography]>=3.3",
+    "pypdf>=5.1",
+    "pdfplumber>=0.11",
+    "python-docx>=1.1",
+    "pillow>=11.0",
+    "pytesseract>=0.3.13",
+    "pdf2image>=1.17",
+]
+
+[project.optional-dependencies]
+s3 = ["boto3>=1.35"]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "httpx>=0.28",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "reportlab>=4.2",
+]
+
+[project.scripts]
+cip = "cip_ingestion.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "libs/cip_core/src/cip_core",
+    "services/ingestion/src/cip_ingestion",
+]
+
+[tool.pytest.ini_options]
+# pythonpath lets the suite run from a clean checkout without an editable install,
+# which keeps CI setup to `pip install -r` + `pytest` and avoids install-order flakiness.
+pythonpath = ["libs/cip_core/src", "services/ingestion/src"]
+testpaths = ["tests"]
+# The assertion cache cannot be written when the checkout lives on a synced drive
+# (OneDrive/Dropbox rename-locks the directory), and it buys nothing in CI.
+addopts = "-p no:cacheprovider"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "integration: requires live PostgreSQL/MongoDB/Neo4j (skipped unless CIP_RUN_INTEGRATION=1)",
+    "ocr: requires a working Tesseract binary on PATH",
+]
+filterwarnings = ["error::DeprecationWarning:cip_.*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["libs/cip_core/src", "services/ingestion/src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RET", "ARG", "PTH", "RUF"]
+ignore = [
+    "B008",   # FastAPI Depends() in defaults is the framework's documented idiom
+    "RUF012", # ClassVar annotations on Pydantic/SQLAlchemy declarative attrs are noise here
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ARG001", "ARG002", "S101"]
+
+# Protocol implementations must accept the full signature even when a particular
+# implementation ignores an argument (a parser that needs no filename, a null OCR engine
+# that ignores the image). Renaming to `_arg` would break the structural typing that makes
+# these interchangeable.
+"services/ingestion/src/cip_ingestion/parsers/*.py" = ["ARG002"]
+"services/ingestion/src/cip_ingestion/api/security.py" = ["ARG002"]
+
+# These modules define and test the ambiguous-character replacement table; the "ambiguous"
+# characters are the subject matter, not an accident.
+"services/ingestion/src/cip_ingestion/processing/normalization.py" = ["RUF001"]
+"tests/unit/test_normalization_and_sections.py" = ["RUF001"]
+"tests/unit/test_parsers.py" = ["RUF001"]
+
+# Framework-mandated signatures: Alembic's include_object hook and FastAPI's lifespan
+# both receive arguments this codebase does not need.
+"migrations/**" = ["ARG001", "N999", "E501"]
+"services/ingestion/src/cip_ingestion/api/app.py" = ["ARG001"]
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "libs/cip_core/src:services/ingestion/src"
+packages = ["cip_core", "cip_ingestion"]
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+strict_equality = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["pytesseract.*", "pdf2image.*", "pdfplumber.*", "docx.*", "motor.*", "jose.*"]
+ignore_missing_imports = true
