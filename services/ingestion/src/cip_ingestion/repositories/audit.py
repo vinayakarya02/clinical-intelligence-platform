@@ -42,7 +42,7 @@ class AuditRepository:
         stmt = (
             select(AuditLog)
             .where(AuditLog.tenant_id == record.tenant_id)
-            .order_by(AuditLog.occurred_at.desc(), AuditLog.audit_id.desc())
+            .order_by(AuditLog.audit_id.desc())
             .limit(1)
             .with_for_update()
         )
@@ -73,11 +73,16 @@ class AuditRepository:
         return row
 
     async def load_chain(self, tenant_id: uuid.UUID, *, limit: int = 1000) -> list[AuditLog]:
-        """Load a tenant's chain in append order, for verification."""
+        """Load a tenant's chain in append order, for verification.
+
+        Ordered by ``audit_id`` — the database-assigned sequence — not by
+        ``occurred_at``, so the read order always matches the order the rows were
+        chained in. See the ``audit_id`` note on the model.
+        """
         stmt = (
             select(AuditLog)
             .where(AuditLog.tenant_id == tenant_id)
-            .order_by(AuditLog.occurred_at.asc(), AuditLog.audit_id.asc())
+            .order_by(AuditLog.audit_id.asc())
             .limit(limit)
         )
         return list((await self._session.execute(stmt)).scalars().all())

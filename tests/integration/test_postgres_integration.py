@@ -218,3 +218,44 @@ class TestJsonbBehaviour:
                 )
             ).scalar_one()
         assert count == 1
+
+
+class TestConcurrentDuplicateInsert:
+    """Real concurrency against a real connection pool.
+
+    The unit suite simulates the duplicate race because its in-memory SQLite fixture shares
+    a single connection across tasks. Only a real PostgreSQL server with a real pool can
+    demonstrate that the unique constraint is what actually arbitrates when two writers
+    genuinely collide — which is the situation a bulk load creates routinely.
+    """
+
+    async def test_only_one_of_two_racing_inserts_survives(
+        self, pg: PostgresManager, context: TenantContext
+    ) -> None:
+        import asyncio
+
+        from sqlalchemy.exc import IntegrityError
+
+        content_hash = "e" * 64
+
+        async def _insert() -> str:
+            try:
+                async with pg.tenant_session(context) as session:
+                    await DocumentRepository(session).add(
+                        _document(context.tenant_id, content_hash), context=context
+                    )
+                return "inserted"
+            except IntegrityError:
+                return "conflict"
+
+        outcomes = await asyncio.gather(_insert(), _insert(), return_exceptions=True)
+        unexpected = [o for o in outcomes if isinstance(o, BaseException)]
+        assert not unexpected, f"only IntegrityError is expected, got: {unexpected}"
+        assert outcomes.count("inserted") == 1
+        assert outcomes.count("conflict") == 1
+
+        async with pg.tenant_session(context) as session:
+            found = await DocumentRepository(session).find_by_content_hash(
+                content_hash, source_system="epic", context=context
+            )
+        assert found is not None

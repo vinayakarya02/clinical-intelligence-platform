@@ -83,7 +83,9 @@ def upgrade() -> None:
 
     op.create_table(
         "audit_log",
-        sa.Column("audit_id", postgresql.UUID(as_uuid=True), nullable=False),
+        # Monotonic sequence, not a UUID: the hash chain is an ordered structure and
+        # needs a total order the database assigns. See the audit_id note on the model.
+        sa.Column("audit_id", sa.BigInteger(), sa.Identity(always=True), nullable=False),
         sa.Column("tenant_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("actor_user_id", sa.Text(), nullable=True),
         sa.Column("actor_service", sa.Text(), nullable=True),

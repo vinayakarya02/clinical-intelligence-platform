@@ -227,3 +227,81 @@ class TestChunkingEdgeCases:
     ) -> None:
         assert "structural-semantic" in chunker.name
         assert "heuristic" in chunker.name
+
+
+class TestOversizedTables:
+    """Regression cover for a bug the original suite structurally could not catch.
+
+    ``test_tables_are_never_split`` used ``TextParser``, which emits every table row as its
+    own block; normalisation then separates them with blank lines, so the chunker saw many
+    small blocks and packed them correctly. The path where a parser emits **one contiguous
+    table block** — which is what the PDF and DOCX parsers actually do — was never
+    exercised, and on that path a large lab panel became a single chunk 11x over the token
+    ceiling that Phase 2 would silently truncate.
+    """
+
+    @staticmethod
+    def _document_with_table_block(row_count: int) -> NormalizedDocument:
+        from cip_ingestion.domain import BlockKind, ParsedDocument, ParsedPage, TextBlock
+        from cip_ingestion.processing import normalize_document
+
+        header = "Analyte | Value | Unit | Reference Range"
+        rows = "\n".join(f"Analyte{i} | {i}.{i} | mmol/L | 1.0-9.9" for i in range(row_count))
+        parsed = ParsedDocument(
+            parser_name="pdf",
+            media_type="application/pdf",
+            pages=(
+                ParsedPage(
+                    page_number=1,
+                    blocks=(
+                        TextBlock(text="LABORATORY RESULTS", kind=BlockKind.HEADING),
+                        TextBlock(text=f"{header}\n{rows}", kind=BlockKind.TABLE),
+                    ),
+                ),
+            ),
+        )
+        normalized = normalize_document(parsed)
+        return replace(normalized, sections=detect_sections(normalized))
+
+    def test_a_table_that_fits_is_kept_whole(self, chunker: StructuralSemanticChunker) -> None:
+        document = self._document_with_table_block(3)
+        chunks = chunker.chunk(document)
+        table_chunks = [c for c in chunks if "mmol/L" in c.text]
+        assert len(table_chunks) == 1, "a small table must not be fragmented"
+
+    def test_an_oversized_table_respects_the_token_ceiling(self) -> None:
+        options = ChunkingOptions(target_tokens=384, min_tokens=64, max_tokens=512)
+        document = self._document_with_table_block(300)
+        chunks = StructuralSemanticChunker(options).chunk(document)
+
+        oversized = [c for c in chunks if c.token_count > options.max_tokens]
+        assert not oversized, (
+            f"{len(oversized)} chunk(s) exceed max_tokens; largest is "
+            f"{max((c.token_count for c in oversized), default=0)}"
+        )
+
+    def test_an_oversized_table_is_split_only_at_row_boundaries(self) -> None:
+        """A chunk must never begin or end mid-row — a partial row is uninterpretable."""
+        options = ChunkingOptions(target_tokens=384, min_tokens=64, max_tokens=512)
+        document = self._document_with_table_block(300)
+        chunks = StructuralSemanticChunker(options).chunk(document)
+
+        for chunk in (c for c in chunks if "mmol/L" in c.text):
+            for line in chunk.text.split("\n"):
+                if "Analyte" in line and "mmol/L" in line:
+                    assert line.count("|") == 3, f"row was cut mid-way: {line!r}"
+
+    def test_split_table_chunks_keep_exact_offsets(self) -> None:
+        options = ChunkingOptions(target_tokens=384, min_tokens=64, max_tokens=512)
+        document = self._document_with_table_block(300)
+        for chunk in StructuralSemanticChunker(options).chunk(document):
+            assert document.text[chunk.char_start : chunk.char_end] == chunk.text
+
+    def test_no_table_content_is_lost_when_splitting(self) -> None:
+        options = ChunkingOptions(target_tokens=384, min_tokens=64, max_tokens=512)
+        document = self._document_with_table_block(300)
+        chunks = StructuralSemanticChunker(options).chunk(document)
+
+        combined = "\n".join(c.text for c in chunks)
+        for i in (0, 42, 150, 299):
+            assert f"Analyte{i} |" in combined, f"row {i} was dropped"

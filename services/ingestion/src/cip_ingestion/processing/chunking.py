@@ -15,14 +15,24 @@ construction, which is exactly what embedding-similarity breakpoints try to reco
 Invariants the implementation guarantees, each enforced by a test:
 
 1. Chunks never cross a section boundary.
-2. Table blocks are never split — a fragment of a lab panel is not a usable retrieval unit.
-3. Chunks never exceed ``chunk_max_tokens``, except for a single indivisible unit that
-   exceeds it alone, which is emitted whole rather than truncated.
+2. Table rows are never split mid-row. A table that fits within ``chunk_max_tokens`` is
+   kept whole; one that does not is divided at row boundaries rather than emitted as a
+   single oversized chunk (see :meth:`StructuralSemanticChunker._table_units`).
+3. Chunks never exceed ``chunk_max_tokens``, except for a single indivisible unit — one
+   sentence or one table row — that exceeds it alone, which is emitted whole rather than
+   truncated.
 4. Character ranges are exact, so every chunk can be traced back to its source span.
+
+Invariant 2 was originally "table blocks are never split", which was both wrong and
+untested: the test fixture used the plain-text parser, which emits each table row as a
+separate block, so the code path where a parser emits one contiguous table block was never
+exercised. A 300-row lab panel from a PDF produced a single chunk 11x over the ceiling,
+which Phase 2 would have silently truncated.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -195,7 +205,7 @@ class StructuralSemanticChunker:
     def _build_units(self, text: str, section: DetectedSection) -> list[_Unit]:
         """Split a section into indivisible units.
 
-        Table blocks become a single atomic unit; prose splits at sentence boundaries.
+        Table blocks are atomic *up to a point*; prose splits at sentence boundaries.
         """
         units: list[_Unit] = []
         for block_start, block_end, is_table in self._iter_blocks(text, section):
@@ -204,14 +214,7 @@ class StructuralSemanticChunker:
                 continue
 
             if is_table:
-                units.append(
-                    _Unit(
-                        start=block_start,
-                        end=block_end,
-                        tokens=self._tokens.count(block_text),
-                        is_atomic=True,
-                    )
-                )
+                units.extend(self._table_units(text, block_start, block_end))
                 continue
 
             sentence_spans = split_sentences(block_text)
@@ -230,8 +233,66 @@ class StructuralSemanticChunker:
                     )
         return units
 
+    def _table_units(self, text: str, block_start: int, block_end: int) -> list[_Unit]:
+        """Split a table block into units that respect the token ceiling.
+
+        A table is kept whole when it fits, because a fragment of a lab panel is a poor
+        retrieval unit. But "keep tables whole" cannot be unconditional: a 300-row
+        comprehensive panel is an order of magnitude over any embedding model's limit, and
+        emitting it as one chunk means Phase 2 silently truncates it and loses most of the
+        results. Splitting at row boundaries is strictly better than being truncated
+        mid-row by a tokenizer that has no idea what a row is.
+
+        Known limitation: the header row is emitted as its own unit and therefore lands in
+        the first chunk only. Chunks are *spans* into the source text — that is what makes
+        their character offsets exact and citations traceable — so a later chunk cannot
+        physically contain the header without breaking that invariant. Carrying the header
+        in chunk metadata instead is the right fix, deferred to Phase 2 where the
+        retrieval layer that would consume it actually exists.
+        """
+        block_text = text[block_start:block_end]
+        total_tokens = self._tokens.count(block_text)
+        if total_tokens <= self._options.max_tokens:
+            return [_Unit(block_start, block_end, total_tokens, is_atomic=True)]
+
+        # Row offsets within the block, so units keep exact character ranges.
+        rows: list[tuple[int, int]] = []
+        cursor = block_start
+        for line in block_text.split("\n"):
+            end = cursor + len(line)
+            if line.strip():
+                rows.append((cursor, end))
+            cursor = end + 1
+
+        if len(rows) <= 1:
+            # A single row that alone exceeds the ceiling: emit it whole rather than
+            # truncating, per the documented indivisible-unit exception.
+            return [_Unit(block_start, block_end, total_tokens, is_atomic=True)]
+
+        header_start, header_end = rows[0]
+        header_tokens = self._tokens.count(text[header_start:header_end])
+
+        units: list[_Unit] = [_Unit(header_start, header_end, header_tokens, is_atomic=True)]
+        group_start: int | None = None
+        group_end = 0
+        group_tokens = header_tokens
+
+        for row_start, row_end in rows[1:]:
+            row_tokens = self._tokens.count(text[row_start:row_end])
+            if group_start is not None and group_tokens + row_tokens > self._options.max_tokens:
+                units.append(_Unit(group_start, group_end, group_tokens, is_atomic=True))
+                group_start, group_tokens = None, header_tokens
+            if group_start is None:
+                group_start = row_start
+            group_end = row_end
+            group_tokens += row_tokens
+
+        if group_start is not None:
+            units.append(_Unit(group_start, group_end, group_tokens, is_atomic=True))
+        return units
+
     @staticmethod
-    def _iter_blocks(text: str, section: DetectedSection):  # type: ignore[no-untyped-def]
+    def _iter_blocks(text: str, section: DetectedSection) -> Iterator[tuple[int, int, bool]]:
         """Yield ``(start, end, is_table)`` blocks within a section.
 
         A run of consecutive pipe-delimited lines is treated as one table: the parsers

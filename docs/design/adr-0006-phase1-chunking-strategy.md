@@ -78,7 +78,15 @@ Rejected alternatives:
 Enforced by tests in `tests/unit/test_chunking.py`, and binding on any future `Chunker`:
 
 1. Chunks never cross a section boundary.
-2. Table blocks are never split.
-3. Chunks never exceed `chunk_max_tokens`, except a single indivisible unit that exceeds
-   it alone — which is emitted whole rather than truncated.
+2. Table rows are never split mid-row. A table within `chunk_max_tokens` is kept whole; a
+   larger one is divided at row boundaries.
+3. Chunks never exceed `chunk_max_tokens`, except a single indivisible unit — one sentence
+   or one table row — that exceeds it alone, which is emitted whole rather than truncated.
 4. Character ranges are exact, so every chunk traces back to its source span for citation.
+
+Invariant 2 originally read "table blocks are never split". That was wrong *and* untested:
+the test fixture used the plain-text parser, which emits each table row as its own block,
+so the path where a parser emits one contiguous table block — what the PDF and DOCX parsers
+actually do — was never exercised. A 300-row lab panel became a single chunk 11x over the
+ceiling, which Phase 2 would have silently truncated. Keeping a table whole is the right
+default; refusing to ever split one is not.

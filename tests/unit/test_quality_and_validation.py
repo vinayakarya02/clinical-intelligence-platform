@@ -12,7 +12,7 @@ from cip_core.errors import (
     UnsupportedMediaTypeError,
     ValidationFailedError,
 )
-from cip_core.models.enums import QualityVerdict
+from cip_core.models.enums import DocumentType, QualityVerdict
 from cip_ingestion.domain import (
     DocumentMetadata,
     NormalizedDocument,
@@ -305,3 +305,57 @@ class TestUploadValidation:
             settings=settings,
         )
         assert upload.filename == "passwd"
+
+
+class TestStructuredDocumentsAreNotPenalisedForSkippedChunking:
+    """Regression cover: structured feeds were being quarantined for a non-failure.
+
+    FHIR bundles and HL7v2 messages populate the relational and graph stores directly and
+    are deliberately never chunk-embedded. The quality gate treated the resulting empty
+    chunk set as a critical ``chunking`` failure, so every structured document was
+    quarantined — silently withholding the highest-volume ingestion path in a hospital
+    from retrieval.
+    """
+
+    @staticmethod
+    def _assess(document_type: DocumentType):  # type: ignore[no-untyped-def]
+        payload = b'{"resourceType": "Bundle", "entry": [{"resource": {"id": "1"}}]}'
+        parsed = TextParser().parse(payload)
+        normalized = normalize_document(parsed)
+        metadata = DocumentMetadata(document_type=document_type)
+        return assess_quality(parsed=parsed, normalized=normalized, chunks=(), metadata=metadata)
+
+    @pytest.mark.parametrize(
+        "document_type",
+        [DocumentType.FHIR_BUNDLE, DocumentType.HL7V2_MESSAGE, DocumentType.DICOM_STUDY],
+    )
+    def test_structured_types_are_not_quarantined_for_having_no_chunks(
+        self, document_type: DocumentType
+    ) -> None:
+        report = self._assess(document_type)
+        assert report.verdict is not QualityVerdict.FAIL
+        assert "chunking" not in {check.name for check in report.failed_checks}
+
+    def test_the_chunking_check_records_why_it_was_skipped(self) -> None:
+        report = self._assess(DocumentType.FHIR_BUNDLE)
+        check = next(c for c in report.checks if c.name == "chunking")
+        assert check.observed["chunking_expected"] is False
+        assert "not applicable" in check.detail
+
+    def test_narrative_types_still_fail_when_chunking_produces_nothing(self) -> None:
+        """The check must keep catching a genuine chunking failure."""
+        report = self._assess(DocumentType.DISCHARGE_SUMMARY)
+        assert report.verdict is QualityVerdict.FAIL
+        assert "chunking" in {check.name for check in report.failed_checks}
+
+    def test_an_explicit_override_wins_over_the_document_type(self) -> None:
+        parsed = TextParser().parse(b"Some narrative clinical content for the parser.")
+        normalized = normalize_document(parsed)
+        report = assess_quality(
+            parsed=parsed,
+            normalized=normalized,
+            chunks=(),
+            metadata=DocumentMetadata(document_type=DocumentType.DISCHARGE_SUMMARY),
+            chunking_expected=False,
+        )
+        assert "chunking" not in {check.name for check in report.failed_checks}

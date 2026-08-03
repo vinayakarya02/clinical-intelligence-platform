@@ -185,8 +185,27 @@ def _garbled_text_check(normalized: NormalizedDocument) -> QualityCheck:
     )
 
 
-def _chunking_check(chunks: tuple[TextChunk, ...], normalized: NormalizedDocument) -> QualityCheck:
-    """Did chunking produce usable retrieval units covering the document?"""
+def _chunking_check(
+    chunks: tuple[TextChunk, ...], normalized: NormalizedDocument, *, expected: bool
+) -> QualityCheck:
+    """Did chunking produce usable retrieval units covering the document?
+
+    ``expected`` distinguishes "chunking failed" from "chunking was never meant to run".
+    Structured interchange formats (FHIR bundles, HL7v2 messages) populate the relational
+    and graph stores directly and are never chunk-embedded, so an empty chunk set is the
+    correct outcome for them. Without this distinction the gate fails every structured
+    feed for not producing chunks it was told not to produce — quarantining the
+    highest-volume ingestion path in a real hospital.
+    """
+    if not expected:
+        return QualityCheck(
+            name="chunking",
+            passed=True,
+            score=1.0,
+            weight=2.0,
+            detail="not applicable: structured document types are not chunk-embedded",
+            observed={"chunk_count": 0, "chunking_expected": False},
+        )
     if not chunks:
         return QualityCheck(
             name="chunking",
@@ -263,6 +282,7 @@ def assess_quality(
     chunks: tuple[TextChunk, ...],
     metadata: DocumentMetadata,
     min_score: float = 0.60,
+    chunking_expected: bool | None = None,
 ) -> QualityReport:
     """Run all quality checks and return the aggregate report.
 
@@ -271,11 +291,18 @@ def assess_quality(
     metadata could average its way past the threshold, which is precisely the document the
     gate exists to catch.
     """
+    # Default to the document's own declaration rather than requiring every caller to
+    # pass it: a caller that forgets should get the type-appropriate behaviour, not a
+    # quarantined document.
+    expects_chunks = (
+        metadata.document_type.is_narrative if chunking_expected is None else chunking_expected
+    )
+
     checks: list[QualityCheck] = [
         _extraction_yield_check(parsed, normalized),
         _empty_page_check(parsed),
         _garbled_text_check(normalized),
-        _chunking_check(chunks, normalized),
+        _chunking_check(chunks, normalized, expected=expects_chunks),
         _parser_warning_check(parsed),
         _metadata_check(metadata),
     ]

@@ -352,9 +352,25 @@ class AuditLog(Base):
         {"schema": PLATFORM_SCHEMA},
     )
 
-    audit_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    audit_id: Mapped[int] = mapped_column(
+        # BigInteger everywhere except SQLite, which only auto-increments a column
+        # declared exactly INTEGER PRIMARY KEY. The production DDL in the migration uses
+        # PostgreSQL IDENTITY; this variant exists so the same model can be created
+        # against SQLite in tests.
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
     )
+    """Monotonic sequence, NOT a UUID.
+
+    The hash chain is an ordered structure, so it needs a total order that the database
+    assigns. ``occurred_at`` cannot provide it — it is supplied by the caller, ties at
+    equal timestamps, and can invert under clock skew — and a random UUID provides no
+    order at all. With either, two records written in the same instant could be read back
+    in a different order than they were chained in, and ``verify_chain`` would report
+    tampering on an intact chain: a compliance control that cries wolf gets ignored.
+    """
+
     tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     actor_user_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     actor_service: Mapped[str | None] = mapped_column(Text, nullable=True)

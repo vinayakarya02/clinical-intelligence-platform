@@ -111,6 +111,10 @@ CREATE INDEX idx_user_roles_role ON platform.user_roles (role_id);
 -- a scheduled job one month ahead of need; partitions older than the hot
 -- window (90 days) are moved to the cold tier per docs/operations/sla-dr.md.
 CREATE TABLE platform.audit_log (
+    -- Monotonic sequence, deliberately NOT a UUID: the hash chain is an ordered
+    -- structure, so it needs a total order the database assigns. Chain reads order by
+    -- audit_id alone; occurred_at is caller-supplied, ties, and can invert under clock
+    -- skew, so ordering by it can make an intact chain fail verification.
     audit_id             BIGINT GENERATED ALWAYS AS IDENTITY,
     tenant_id             UUID NOT NULL REFERENCES platform.tenants(tenant_id),
     actor_user_id          UUID REFERENCES platform.users(user_id),

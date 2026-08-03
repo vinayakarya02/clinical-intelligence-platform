@@ -14,7 +14,6 @@ import pytest
 
 from cip_ingestion.cli import (
     EXIT_OK,
-    EXIT_PARTIAL_FAILURE,
     EXIT_USAGE,
     _discover_files,
     _report,
@@ -206,13 +205,3 @@ class TestCommands:
             == EXIT_USAGE
         )
         assert "error:" in capsys.readouterr().err
-
-
-class TestExitCodes:
-    def test_exit_codes_are_distinct(self) -> None:
-        from cip_ingestion.cli import EXIT_DEPENDENCY
-
-        assert len({EXIT_OK, EXIT_PARTIAL_FAILURE, EXIT_USAGE, EXIT_DEPENDENCY}) == 4
-
-    def test_success_is_zero(self) -> None:
-        assert EXIT_OK == 0

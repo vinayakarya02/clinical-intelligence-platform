@@ -435,3 +435,85 @@ class TestIngestionPipeline:
         async with postgres.tenant_session(context) as session:
             entries = await AuditRepository(session).load_chain(context.tenant_id)
         assert entries[0].phi_accessed is False
+
+
+class TestDuplicateRaceTranslation:
+    """Regression cover: the duplicate pre-check is not atomic with the insert.
+
+    ``_find_duplicate`` runs in its own transaction, so two concurrent uploads of identical
+    content both observe "no duplicate" and both attempt an insert. The unique constraint
+    on (tenant_id, source_system, content_hash) arbitrates — but before this fix the loser
+    surfaced as a 500 PipelineError rather than the 409 the API contract promises, which is
+    exactly the behaviour a bulk load produces.
+
+    True concurrency is asserted in the integration suite, against real PostgreSQL with a
+    real connection pool: the in-memory SQLite fixture shares one connection across tasks,
+    so simultaneous transactions there interfere in ways that prove nothing about
+    production. Here the race window is simulated directly, which tests the translation
+    itself rather than the scheduler.
+    """
+
+    async def test_constraint_violation_surfaces_as_a_conflict_not_a_server_error(
+        self,
+        pipeline: IngestionPipeline,
+        postgres: PostgresManager,
+        context: TenantContext,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        await pipeline.ingest(_request(), context=context)
+
+        # Simulate losing the race: the pre-check sees nothing, the insert hits the
+        # constraint. Without the translation this raises PipelineError (HTTP 500).
+        call_count = {"n": 0}
+        real_find = pipeline._find_duplicate
+
+        async def _blind_first_call(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return None
+            return await real_find(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(pipeline, "_find_duplicate", _blind_first_call)
+
+        with pytest.raises(DuplicateDocumentError) as exc_info:
+            await pipeline.ingest(_request(), context=context)
+        assert exc_info.value.content_hash
+
+        async with postgres.tenant_session(context) as session:
+            documents = await DocumentRepository(session).list_for_tenant(context=context)
+        assert len(documents) == 1, "the constraint must admit exactly one document"
+
+    async def test_conflict_reports_the_surviving_document_id(
+        self, pipeline: IngestionPipeline, context: TenantContext
+    ) -> None:
+        """A client must be able to adopt the existing document rather than retry blindly."""
+        first = await pipeline.ingest(_request(), context=context)
+        with pytest.raises(DuplicateDocumentError) as exc_info:
+            await pipeline.ingest(_request(), context=context)
+        assert exc_info.value.existing_document_id == str(first.document_id)
+
+
+class TestStructuredDocumentIngestion:
+    """A FHIR bundle must ingest successfully, not land in quarantine."""
+
+    async def test_fhir_bundle_is_not_quarantined(
+        self, pipeline: IngestionPipeline, postgres: PostgresManager, context: TenantContext
+    ) -> None:
+        result = await pipeline.ingest(
+            _request(
+                data=b'{"resourceType": "Bundle", "entry": [{"resource": {"id": "1"}}]}',
+                filename="bundle.json",
+                document_type=DocumentType.FHIR_BUNDLE,
+            ),
+            context=context,
+        )
+
+        assert result.status is IngestionStatus.CHUNKED
+        assert result.chunk_count == 0, "structured formats are not chunk-embedded"
+        assert result.quality is not None
+        assert result.quality.verdict is not QualityVerdict.FAIL
+
+        async with postgres.tenant_session(context) as session:
+            document = await DocumentRepository(session).get(result.document_id, context=context)
+        assert document is not None
+        assert document.ingestion_status == IngestionStatus.CHUNKED.value

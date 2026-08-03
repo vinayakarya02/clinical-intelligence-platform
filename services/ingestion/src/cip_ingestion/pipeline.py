@@ -23,6 +23,8 @@ import datetime as dt
 import uuid
 from dataclasses import dataclass, field
 
+from sqlalchemy.exc import IntegrityError
+
 from cip_core.audit import AuditRecord
 from cip_core.config import Settings
 from cip_core.db.mongo import MongoManager
@@ -90,12 +92,7 @@ class IngestionResult:
     content_hash: str
     run_id: uuid.UUID | None = None
     quality: QualityReport | None = None
-    duplicate_of: uuid.UUID | None = None
     stage_durations_ms: dict[str, float] = field(default_factory=dict)
-
-    @property
-    def is_duplicate(self) -> bool:
-        return self.duplicate_of is not None
 
 
 class IngestionPipeline:
@@ -185,6 +182,27 @@ class IngestionPipeline:
                     pipeline_version=PIPELINE_VERSION,
                 )
                 run_id = run.run_id
+        except IntegrityError as exc:
+            # The pre-check above runs in its own transaction, so two concurrent uploads of
+            # identical content both see "no duplicate" and both insert. The unique
+            # constraint on (tenant_id, source_system, content_hash) is what actually
+            # arbitrates; without translating it here the loser gets a 500 for what is
+            # really a 409, and the API contract in docs/api/openapi.yaml would be a lie
+            # under exactly the concurrency a bulk load produces.
+            loser = await self._find_duplicate(
+                upload.content_hash, source_system=request.source_system, context=context
+            )
+            _log.info(
+                "ingest.duplicate_race",
+                content_hash=upload.content_hash,
+                winner_document_id=str(loser.document_id) if loser else None,
+            )
+            raise DuplicateDocumentError(
+                "A document with identical content has already been ingested from this "
+                "source system",
+                existing_document_id=str(loser.document_id) if loser else str(document_id),
+                content_hash=upload.content_hash,
+            ) from exc
         except CipError:
             raise
         except Exception as exc:

@@ -500,3 +500,95 @@ class TestAuditRepository:
         assert len(second) == 1
         assert first[0].prev_hash == "0" * 64
         assert second[0].prev_hash == "0" * 64
+
+
+class TestAuditChainOrdering:
+    """Regression cover: the chain must not depend on caller-supplied timestamps.
+
+    ``audit_id`` was a random UUID and the chain was read back ordered by
+    ``(occurred_at, audit_id)``. Records sharing a timestamp — routine when a batch writes
+    several events in the same instant, or when a caller passes an explicit
+    ``occurred_at`` — therefore had a nondeterministic read order, and ``verify_chain``
+    could report tampering on a perfectly intact chain. A compliance control that raises
+    false alarms is a control people learn to ignore.
+    """
+
+    async def test_chain_verifies_when_records_share_a_timestamp(
+        self, postgres: PostgresManager, context: TenantContext
+    ) -> None:
+        stamp = dt.datetime(2026, 3, 14, 12, 0, tzinfo=dt.UTC)
+        records = [
+            AuditRecord(
+                tenant_id=context.tenant_id,
+                action=f"document.action_{index}",
+                resource_type="document",
+                resource_id=str(index),
+                occurred_at=stamp,
+            )
+            for index in range(8)
+        ]
+        async with postgres.tenant_session(context) as session:
+            repo = AuditRepository(session)
+            for record in records:
+                await repo.append(record)
+
+        async with postgres.tenant_session(context) as session:
+            rows = await AuditRepository(session).load_chain(context.tenant_id)
+
+        entries = [
+            (record, row.prev_hash or "", row.row_hash)
+            for record, row in zip(records, rows, strict=True)
+        ]
+        assert verify_chain(entries) == [], "identical timestamps must not break the chain"
+
+    async def test_audit_ids_are_monotonic_in_append_order(
+        self, postgres: PostgresManager, context: TenantContext
+    ) -> None:
+        stamp = dt.datetime(2026, 3, 14, 12, 0, tzinfo=dt.UTC)
+        async with postgres.tenant_session(context) as session:
+            repo = AuditRepository(session)
+            for index in range(5):
+                await repo.append(
+                    AuditRecord(
+                        tenant_id=context.tenant_id,
+                        action=f"a{index}",
+                        resource_type="document",
+                        occurred_at=stamp,
+                    )
+                )
+
+        async with postgres.tenant_session(context) as session:
+            rows = await AuditRepository(session).load_chain(context.tenant_id)
+
+        ids = [row.audit_id for row in rows]
+        assert ids == sorted(ids), "the chain must be ordered by a monotonic sequence"
+        assert len(set(ids)) == len(ids)
+
+    async def test_out_of_order_timestamps_do_not_break_the_chain(
+        self, postgres: PostgresManager, context: TenantContext
+    ) -> None:
+        """Clock skew between writers must not corrupt the chain's linkage."""
+        base = dt.datetime(2026, 3, 14, 12, 0, tzinfo=dt.UTC)
+        offsets = [0, -30, 60, -10, 5]
+        records = [
+            AuditRecord(
+                tenant_id=context.tenant_id,
+                action=f"skewed_{index}",
+                resource_type="document",
+                occurred_at=base + dt.timedelta(seconds=offset),
+            )
+            for index, offset in enumerate(offsets)
+        ]
+        async with postgres.tenant_session(context) as session:
+            repo = AuditRepository(session)
+            for record in records:
+                await repo.append(record)
+
+        async with postgres.tenant_session(context) as session:
+            rows = await AuditRepository(session).load_chain(context.tenant_id)
+
+        entries = [
+            (record, row.prev_hash or "", row.row_hash)
+            for record, row in zip(records, rows, strict=True)
+        ]
+        assert verify_chain(entries) == []
