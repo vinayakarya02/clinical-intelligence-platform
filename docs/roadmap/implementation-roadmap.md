@@ -1,7 +1,7 @@
 # Implementation Roadmap
 
-**Status:** Phase 0 complete (architecture, adversarial review, remediation). **Phase 1
-document-intelligence pipeline implemented** — see the Phase 1 section below for what
+**Status:** Phases 0–3 delivered. **Phase 1 document-intelligence pipeline, Phase 2
+hybrid retrieval, and Phase 3 clinical copilot are implemented** — see the Phase 1 section below for what
 shipped, what was deliberately deferred, and what remains before the phase can be called
 complete.
 **Revised after Phase 0 review:** see [phase-0-architecture-review.md](../design/phase-0-architecture-review.md).
@@ -148,7 +148,44 @@ Implemented, tested, and benchmarked; see
 measurable accuracy improvement over the Phase 1 vector-only baseline on the eval set, including
 the numeric-accuracy sub-metric.
 
-## Phase 3 — Analytics & Dashboards
+## Phase 3 — Clinical Copilot (intelligence layer delivered)
+
+Implemented, tested, and benchmarked; see
+[phase-3-engineering-report.md](../design/phase-3-engineering-report.md) and
+[services/copilot/README.md](../../services/copilot/README.md).
+
+- [x] Multi-turn conversation: working / episodic / semantic memory, reference resolution,
+      clarification when a reference cannot be resolved
+- [x] Clinical reasoning over retrieved evidence, the knowledge graph, structured records, and
+      tool results, aggregated into one deduplicated, ranked evidence set
+- [x] Explainable AI: cited evidence, narrated graph chains, full stage trace, decomposed
+      confidence, and a plain-language uncertainty explanation on every answer
+- [x] Tool framework: ten clinical tools behind one registry with JSON-Schema argument
+      validation, PHI-class scope checks, and approval gating
+      ([ADR-0009](../design/adr-0009-deterministic-orchestration.md))
+- [x] Agentic workflow as eight independently testable stages over an immutable state
+- [x] Reflection as deterministic verification against cited evidence, dropping rather than
+      rewriting ([ADR-0010](../design/adr-0010-verification-not-self-critique.md))
+- [x] Clinical safety: insufficient evidence, contradiction, staleness, ambiguity, and
+      dangerous-combination detectors with severity-driven handling
+- [x] Structured responses: Markdown, JSON, compact API envelope, FHIR `DocumentReference` +
+      `Provenance` bundle
+- [x] Timeline intelligence across encounter / condition / medication / observation tracks
+- [x] Human-in-the-loop suspend, resume, and deny
+- [x] Prompt registry v2: deployment pins, rollback, session-stable experiments
+- [x] Evaluation: planner recall, verification rate, hallucination rate, abstention
+      correctness, citation rate, graph utilisation, latency, tokens, cost
+
+### Remaining
+
+- A real language model behind the `LanguageModel` protocol — every quality figure in this
+  phase is a property of the deterministic extractive composer
+- An EHR/FHIR adapter behind `ClinicalDataSource`; the only implementation is in-memory
+- A curated, clinician-reviewed reasoning eval set (six cases today)
+- An LLM planner for question shapes outside the rule set
+- Streaming responses, and a shared memory store for multi-replica deployment
+
+## Phase 4 — Analytics & Dashboards
 
 - Analytics warehouse ETL (de-identified aggregate pipeline)
 - Dashboard categories: clinical/pharmacovigilance, operational, governance, usage
@@ -158,7 +195,7 @@ the numeric-accuracy sub-metric.
 **Exit criteria:** tenant admins and analysts have self-service dashboards without needing
 direct database access.
 
-## Phase 4 — Enterprise Hardening & Compliance Certification
+## Phase 5 — Enterprise Hardening & Compliance Certification
 
 - HITRUST CSF and SOC 2 Type II audits (assessor engaged; cadence and scope tracked alongside the
   Phase 1 third-party security review, not as a newly-introduced process)

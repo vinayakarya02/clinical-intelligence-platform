@@ -9,7 +9,7 @@ This is not a chatbot demo and not a simple single-store RAG pipeline. It is des
 multi-tenant system with defense-in-depth data isolation, HIPAA-aligned compliance controls, and
 provenance/citation on every generated answer — see [docs/architecture/06-security-compliance.md](docs/architecture/06-security-compliance.md).
 
-## Status: Phase 2 — Hybrid retrieval intelligence layer implemented
+## Status: Phase 3 — Clinical Copilot implemented
 
 Phase 0 (architecture and design) is complete and was put through an adversarial,
 principal-engineer-level production design review — 4 independent reviewers, 74 findings, all
@@ -34,11 +34,21 @@ harness. Start at [services/retrieval/README.md](services/retrieval/README.md); 
 benchmarks, the bugs the end-to-end run found, and an honest production-readiness
 assessment.
 
-Conversational AI, the analytics layer, and the web UI are **not** implemented — they are
-Phases 2's conversational half and Phase 3+. Two substitutions inside Phase 2 are also
-outstanding by design: the embedding provider is a deterministic lexical baseline rather
-than a clinical model, and the reranker is a linear feature scorer rather than the
-cross-encoder Phase 0 specifies. The
+**Phase 3's clinical copilot is implemented and tested**: multi-turn conversational memory,
+a deterministic planner, a ten-tool calling framework with PHI-scoped authorisation, evidence
+aggregation, claim construction, verification-based reflection, five clinical safety
+detectors, explanation assembly, human-in-the-loop approval, a prompt registry with rollback
+and experiments, and Markdown/JSON/API/FHIR output. Start at
+[services/copilot/README.md](services/copilot/README.md); the
+[Phase 3 engineering report](docs/design/phase-3-engineering-report.md) records the
+benchmarks, the eleven defects end-to-end verification found, and an honest readiness
+assessment.
+
+The analytics layer and the web UI are **not** implemented — they are Phase 4+. Three
+substitutions are also outstanding by design and are named in the reports rather than papered
+over: the embedding provider is a deterministic lexical baseline rather than a clinical model,
+the reranker is a linear feature scorer rather than a cross-encoder, and the language model is
+a deterministic extractive composer rather than a real provider. The
 [roadmap](docs/roadmap/implementation-roadmap.md) lists precisely what shipped, what was
 deferred and why.
 
@@ -65,7 +75,10 @@ Full rationale: [ADR-0001](docs/design/adr-0001-hybrid-graph-vector-retrieval.md
 |---|---|
 | **Ingestion service (Phase 1 implementation)** | [services/ingestion/README.md](services/ingestion/README.md) |
 | **Retrieval service (Phase 2 implementation)** | [services/retrieval/README.md](services/retrieval/README.md) |
+| **Copilot service (Phase 3 implementation)** | [services/copilot/README.md](services/copilot/README.md) |
+| Clinical copilot design | [docs/architecture/07-clinical-copilot.md](docs/architecture/07-clinical-copilot.md) |
 | **Phase 2 engineering report** (benchmarks, bugs, readiness) | [docs/design/phase-2-engineering-report.md](docs/design/phase-2-engineering-report.md) |
+| **Phase 3 engineering report** (benchmarks, bugs, readiness) | [docs/design/phase-3-engineering-report.md](docs/design/phase-3-engineering-report.md) |
 | System architecture (context/container diagrams, service inventory) | [docs/architecture/01-system-architecture.md](docs/architecture/01-system-architecture.md) |
 | RAG & hybrid retrieval design | [docs/architecture/02-rag-hybrid-retrieval.md](docs/architecture/02-rag-hybrid-retrieval.md) |
 | Knowledge graph design | [docs/architecture/03-knowledge-graph.md](docs/architecture/03-knowledge-graph.md) |
@@ -110,8 +123,14 @@ clinical-intelligence-platform/
 │   │   ├── adr-0005-phase1-service-decomposition.md
 │   │   ├── adr-0006-phase1-chunking-strategy.md
 │   │   ├── adr-0007-vector-store-mongodb-atlas.md
+│   │   ├── adr-0008-copilot-module-boundaries.md
+│   │   ├── adr-0009-deterministic-orchestration.md
+│   │   ├── adr-0010-verification-not-self-critique.md
+│   │   ├── adr-0011-memory-tiers.md
+│   │   ├── adr-0012-language-model-seam.md
 │   │   ├── phase-0-architecture-review.md
-│   │   └── phase-2-engineering-report.md
+│   │   ├── phase-2-engineering-report.md
+│   │   └── phase-3-engineering-report.md
 │   ├── database/
 │   │   ├── postgres-schema.sql
 │   │   └── graph-schema.md
@@ -145,29 +164,47 @@ clinical-intelligence-platform/
 │   │       ├── processor.py            Pure stage orchestration (no I/O)
 │   │       ├── pipeline.py             Full ETL with storage/database/audit I/O
 │   │       └── cli.py                  Batch ingest, health, config, migrations
-│   └── retrieval/                   ✅ Phase 2 hybrid retrieval intelligence layer
-│       └── src/cip_retrieval/
-│           ├── embeddings/             Provider protocol, batching, retry, cache, versioning
-│           ├── vectorstore/            Atlas `$vectorSearch` + exact in-memory backend
-│           ├── graph/                  Ontology-aware nodes/edges, provenance, traversal
-│           ├── retrievers/             Vector, BM25 keyword, graph
-│           ├── prompts/                Versioned template registry (YAML)
-│           ├── evaluation/             Retrieval + grounding metrics, eval harness
-│           ├── fusion.py               Weighted Reciprocal Rank Fusion
-│           ├── routing.py              Intent classification → strategy weights
-│           ├── reranking.py            Interpretable feature reranker
-│           ├── context.py              Token budget, dedup, citations, graph evidence
-│           ├── pipeline.py             Orchestration + no-evidence gate
-│           └── demo.py                 End-to-end verification, benchmarks, evaluation
+│   ├── retrieval/                   ✅ Phase 2 hybrid retrieval intelligence layer
+│   │   └── src/cip_retrieval/
+│   │       ├── embeddings/             Provider protocol, batching, retry, cache, versioning
+│   │       ├── vectorstore/            Atlas `$vectorSearch` + exact in-memory backend
+│   │       ├── graph/                  Ontology-aware nodes/edges, provenance, traversal
+│   │       ├── retrievers/             Vector, BM25 keyword, graph
+│   │       ├── prompts/                Versioned template registry (YAML)
+│   │       ├── evaluation/             Retrieval + grounding metrics, eval harness
+│   │       ├── fusion.py               Weighted Reciprocal Rank Fusion
+│   │       ├── routing.py              Intent classification → strategy weights
+│   │       ├── reranking.py            Interpretable feature reranker
+│   │       ├── context.py              Token budget, dedup, citations, graph evidence
+│   │       ├── pipeline.py             Orchestration + no-evidence gate
+│   │       └── demo.py                 End-to-end verification, benchmarks, evaluation
+│   └── copilot/                     ✅ Phase 3 clinical intelligence layer
+│       └── src/cip_copilot/
+│           ├── domain.py               Evidence, Claim, CopilotState, Answer
+│           ├── records.py              FHIR-shaped clinical records + data-source protocol
+│           ├── llm/                    LanguageModel seam + extractive implementation
+│           ├── prompts/                Registry v2: pins, rollback, experiments
+│           ├── memory/                 Working / episodic / semantic tiers
+│           ├── timeline/               Chronological reconstruction
+│           ├── tools/                  Ten clinical tools behind one registry
+│           ├── planner/                Question → validated Plan
+│           ├── reasoning/              Evidence aggregation → claims
+│           ├── validation/             Claim verification (the reflection pass)
+│           ├── safety/                 Five clinical safety detectors
+│           ├── explanations/           Evidence, graph chains, trace, confidence
+│           ├── output/                 Markdown / JSON / API / FHIR renderers
+│           ├── agents/                 The eight pipeline stages
+│           ├── evaluation/             Reasoning, planning, cost metrics
+│           ├── orchestrator.py         Stage sequencing + HITL suspend/resume
+│           └── demo.py                 End-to-end verification and benchmarks
 ├── migrations/                      ✅ Alembic migrations for the operational store
-├── tests/                           ✅ unit / api / integration
+├── tests/                           ✅ unit / api / integration / retrieval / copilot
 │
 │   # --- later-phase target layout; not yet created ---
 │
 ├── services/identity/                  AuthN/Z, tenant & RBAC/ABAC, break-glass grants
 ├── services/extraction/                Ontology coding, LocalConcept fallback
 ├── services/knowledge-graph/           Entity extraction, community detection
-├── services/conversational-ai/         Chat orchestration, grounding, numeric verification
 ├── services/analytics/                 Aggregation, cohort queries, dashboard API
 ├── web/                                Chat UI, search, dashboards, admin console
 ├── infra/                              IaC (Kubernetes / Terraform), CI/CD, policy gates
@@ -177,7 +214,8 @@ clinical-intelligence-platform/
     └── reports/                        Historical eval runs, tracked for drift
 ```
 
-Tests live in a single top-level `tests/` tree (`unit/`, `api/`, `integration/`) rather than
+Tests live in a single top-level `tests/` tree (`unit/`, `api/`, `integration/`, `retrieval/`,
+`copilot/`) rather than
 per-service, because Phase 1 ships one deployable unit
 ([ADR-0005](docs/design/adr-0005-phase1-service-decomposition.md)). They move alongside their
 service when the first extraction happens.
@@ -204,6 +242,8 @@ service when the first extraction happens.
 | Phase 1 runtime | Python 3.11, FastAPI, SQLAlchemy 2 async, Alembic, structlog, pytest | [services/ingestion/README.md](services/ingestion/README.md) |
 | Vector tier (Phase 2) | MongoDB Atlas Vector Search, superseding ADR-0004's pgvector choice | [ADR-0007](docs/design/adr-0007-vector-store-mongodb-atlas.md) |
 | Rank fusion | Reciprocal Rank Fusion (k=60) over per-strategy rankings | [phase-2-engineering-report.md §1.2](docs/design/phase-2-engineering-report.md) |
+| Agent orchestration (Phase 3) | Deterministic stage pipeline; no agent framework | [ADR-0009](docs/design/adr-0009-deterministic-orchestration.md), [ADR-0012](docs/design/adr-0012-language-model-seam.md) |
+| Reflection | Verification against cited evidence, not LLM self-critique | [ADR-0010](docs/design/adr-0010-verification-not-self-critique.md) |
 
 ## License
 
