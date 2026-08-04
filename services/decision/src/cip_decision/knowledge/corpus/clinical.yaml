@@ -1,0 +1,287 @@
+# ============================================================================================
+# DEMONSTRATION KNOWLEDGE — NOT CLINICALLY REVIEWED — NOT FOR USE WITH REAL PATIENTS
+# ============================================================================================
+#
+# Interactions, guidelines, risk models, and care pathways. Same caveat as rules.yaml: this is
+# textbook-level content with citations, present to exercise the engine, and it has not been
+# clinically reviewed. See docs/safety/clinical-safety-case.md.
+#
+# In a real deployment the interaction set is replaced by a licensed, maintained reference
+# database. A hand-maintained interaction list is not a viable clinical artifact — the
+# maintenance burden is the reason those databases are commercial products.
+
+guidelines:
+  - id: gl-hyperkalemia-monitoring
+    version: "1.0.0"
+    title: Monitoring potassium during RAAS-blocking therapy
+    publisher: Demonstration corpus
+    effective_from: "2025-01-01"
+    summary: >
+      Patients on ACE inhibitors, angiotensin receptor blockers, or potassium-sparing
+      diuretics require periodic monitoring of serum potassium and renal function.
+    citations:
+      - source: FDA prescribing information
+        reference: ACE inhibitor and aldosterone antagonist class labelling
+
+  - id: gl-renal-dosing
+    version: "1.0.0"
+    title: Renal function and medication selection
+    publisher: Demonstration corpus
+    effective_from: "2025-01-01"
+    summary: >
+      Several agents require dose adjustment or are contraindicated below defined levels of
+      renal function.
+    citations:
+      - source: FDA prescribing information
+        reference: Renal impairment sections, various labels
+
+  - id: gl-anticoagulation-af
+    version: "1.0.0"
+    title: Stroke risk assessment in atrial fibrillation
+    publisher: Demonstration corpus
+    effective_from: "2025-01-01"
+    summary: >
+      Stroke risk in non-valvular atrial fibrillation is conventionally stratified with a
+      published point score to inform anticoagulation decisions.
+    citations:
+      - source: Published clinical literature
+        reference: CHA2DS2-VASc stroke risk stratification
+
+# ------------------------------------------------------------------------------------------
+# Drug interactions. Severity and evidence quality are independent (ADR-0020).
+# `mechanism` is required in spirit even where the schema does not enforce it: an interaction
+# whose mechanism nobody can state is one nobody can evaluate.
+# ------------------------------------------------------------------------------------------
+interactions:
+  - id: ddi-ace-spironolactone
+    left: lisinopril
+    left_class: ace-inhibitor
+    right: spironolactone
+    right_class: aldosterone-antagonist
+    severity: major
+    evidence_quality: established
+    effect: Additive hyperkalemia
+    mechanism: >
+      Both agents reduce renal potassium excretion — the ACE inhibitor by lowering aldosterone,
+      the antagonist by blocking its receptor.
+    management: >
+      Monitor serum potassium and renal function; consider dose reduction or an alternative
+      agent if potassium rises.
+    citations:
+      - source: FDA prescribing information
+        reference: Spironolactone labelling, drug interactions
+
+  - id: ddi-ace-nsaid
+    left: lisinopril
+    left_class: ace-inhibitor
+    right: ibuprofen
+    right_class: nsaid
+    severity: moderate
+    evidence_quality: established
+    effect: Reduced antihypertensive effect and increased renal risk
+    mechanism: >
+      NSAIDs inhibit prostaglandin-mediated afferent arteriolar dilatation, opposing the
+      haemodynamic effect of RAAS blockade.
+    management: Monitor blood pressure and renal function; prefer an alternative analgesic.
+    citations:
+      - source: FDA prescribing information
+        reference: ACE inhibitor labelling, drug interactions — NSAIDs
+
+  - id: ddi-warfarin-nsaid
+    left: warfarin
+    left_class: vitamin-k-antagonist
+    right: ibuprofen
+    right_class: nsaid
+    severity: major
+    evidence_quality: established
+    effect: Increased bleeding risk
+    mechanism: >
+      NSAIDs impair platelet function and cause gastric mucosal injury, compounding
+      anticoagulation.
+    management: Avoid where possible; if unavoidable, add gastroprotection and monitor closely.
+    citations:
+      - source: FDA prescribing information
+        reference: Warfarin labelling, drug interactions
+
+  - id: ddi-metformin-contrast
+    left: metformin
+    left_class: biguanide
+    right: iodinated-contrast
+    right_class: contrast-media
+    severity: contraindicated
+    evidence_quality: established
+    effect: Risk of lactic acidosis if renal function declines after contrast
+    mechanism: Contrast-induced nephropathy reduces metformin clearance.
+    management: Withhold metformin at the time of contrast administration per local protocol.
+    citations:
+      - source: FDA prescribing information
+        reference: Metformin labelling, warnings — iodinated contrast
+
+  - id: ddi-simvastatin-clarithromycin
+    left: simvastatin
+    left_class: statin
+    right: clarithromycin
+    right_class: macrolide
+    severity: contraindicated
+    evidence_quality: established
+    effect: Markedly increased statin exposure with risk of rhabdomyolysis
+    mechanism: Clarithromycin is a strong CYP3A4 inhibitor; simvastatin is a CYP3A4 substrate.
+    management: Suspend the statin during the macrolide course or select a non-interacting pair.
+    citations:
+      - source: FDA prescribing information
+        reference: Simvastatin labelling, contraindications — strong CYP3A4 inhibitors
+
+# ------------------------------------------------------------------------------------------
+# Risk models. Published point scores only — every component is a documented criterion with
+# documented points. No model-derived risk: an estimate about a patient produced by a fitted
+# model is a regulated claim rather than a calculation.
+# ------------------------------------------------------------------------------------------
+risk_models:
+  - id: cha2ds2-vasc
+    version: "1.0.0"
+    title: CHA2DS2-VASc stroke risk in non-valvular atrial fibrillation
+    guideline: gl-anticoagulation-af
+    # The population this score is defined for. Without it the engine would compute and band
+    # a stroke-risk-in-AF score for patients who do not have atrial fibrillation, which is a
+    # meaningless number that looks authoritative.
+    applies_when:
+      has: { kind: condition, name: atrial fibrillation }
+    interpretation:
+      - { at_least: 0, band: low, note: "Score 0 in men, 1 in women is conventionally low risk" }
+      - { at_least: 1, band: intermediate, note: "Discuss anticoagulation" }
+      - { at_least: 2, band: high, note: "Anticoagulation conventionally recommended" }
+    citations:
+      - source: Published clinical literature
+        reference: CHA2DS2-VASc stroke risk stratification
+    components:
+      - id: chf
+        label: Congestive heart failure
+        points: 1
+        when: { has: { kind: condition, name: heart failure } }
+      - id: hypertension
+        label: Hypertension
+        points: 1
+        when: { has: { kind: condition, name: hypertension } }
+      - id: age75
+        label: Age 75 or over
+        points: 2
+        when: { age: { min: 75 } }
+      - id: diabetes
+        label: Diabetes mellitus
+        points: 1
+        when: { has: { kind: condition, name: diabetes } }
+      - id: stroke
+        label: Prior stroke, TIA, or thromboembolism
+        points: 2
+        when: { has: { kind: condition, name: stroke } }
+      - id: vascular
+        label: Vascular disease
+        points: 1
+        when: { has: { kind: condition, name: vascular disease } }
+      - id: age65
+        label: Age 65 to 74
+        points: 1
+        when: { age: { min: 65, max: 75 } }
+
+  - id: aki-risk-flag
+    version: "1.0.0"
+    title: Acute kidney injury risk factors present
+    guideline: gl-renal-dosing
+    interpretation:
+      - { at_least: 0, band: low, note: "No recorded risk factors" }
+      - { at_least: 2, band: intermediate, note: "Review nephrotoxic exposure" }
+      - { at_least: 3, band: high, note: "Consider renal function monitoring" }
+    citations:
+      - source: Published clinical literature
+        reference: Recognised risk factors for acute kidney injury
+    components:
+      - id: age65
+        label: Age 65 or over
+        points: 1
+        when: { age: { min: 65 } }
+      - id: ckd
+        label: Chronic kidney disease
+        points: 1
+        when: { has: { kind: condition, name: chronic kidney disease } }
+      - id: nsaid
+        label: NSAID exposure
+        points: 1
+        when:
+          any:
+            - has: { kind: medication, name: ibuprofen }
+            - has: { kind: medication, name: naproxen }
+      - id: raas
+        label: RAAS blockade
+        points: 1
+        when:
+          any:
+            - has: { kind: medication, name: lisinopril }
+            - has: { kind: medication, name: ramipril }
+            - has: { kind: medication, name: losartan }
+      - id: diuretic
+        label: Diuretic therapy
+        points: 1
+        when:
+          any:
+            - has: { kind: medication, name: furosemide }
+            - has: { kind: medication, name: indapamide }
+
+# ------------------------------------------------------------------------------------------
+# Care pathways, shaped after FHIR PlanDefinition (ADR-0023): a tree of actions, each with an
+# applicability condition evaluated by the same rules engine everything else uses.
+# ------------------------------------------------------------------------------------------
+pathways:
+  - id: pw-hyperkalemia
+    version: "1.0.0"
+    title: Hyperkalemia assessment and management
+    guideline: gl-hyperkalemia-monitoring
+    trigger:
+      compare: { observation: potassium, op: ">", value: 5.0, unit: mmol/L }
+    citations:
+      - source: Demonstration corpus
+        reference: Hyperkalemia workup structure
+    actions:
+      - id: confirm
+        title: Confirm the result
+        stage: investigation
+        description: Repeat serum potassium to exclude a spurious result.
+        when: { always: "a raised potassium is confirmed before acting on it" }
+      - id: ecg
+        title: Obtain an ECG
+        stage: investigation
+        description: Assess for changes associated with significant hyperkalemia.
+        when:
+          compare: { observation: potassium, op: ">", value: 6.0, unit: mmol/L }
+      - id: review-raas
+        title: Review RAAS-blocking therapy
+        stage: treatment
+        description: Consider dose reduction or suspension pending the repeat result.
+        when:
+          any:
+            - has: { kind: medication, name: lisinopril }
+            - has: { kind: medication, name: ramipril }
+            - has: { kind: medication, name: losartan }
+      - id: review-potassium-sparing
+        title: Review potassium-sparing diuretic therapy
+        stage: treatment
+        description: Consider suspension pending the repeat result.
+        when:
+          any:
+            - has: { kind: medication, name: spironolactone }
+            - has: { kind: medication, name: eplerenone }
+      - id: recheck
+        title: Recheck potassium
+        stage: monitoring
+        description: Repeat within the interval local protocol defines.
+        when: { always: "monitoring follows any intervention" }
+      - id: renal-follow-up
+        title: Arrange renal follow-up
+        stage: follow_up
+        description: Consider referral where potassium remains raised or renal function declines.
+        when:
+          compare: { observation: egfr, op: "<", value: 45, unit: mL/min/1.73m2 }
+      - id: discharge-advice
+        title: Document discharge advice
+        stage: discharge
+        description: Record the monitoring plan and which agents were changed.
+        when: { always: "a plan is documented before discharge" }

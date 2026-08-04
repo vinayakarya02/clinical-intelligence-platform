@@ -54,6 +54,7 @@ packages = [
     "services/copilot/src/cip_copilot",
     "libs/cip_platform/src/cip_platform",
     "services/gateway/src/cip_gateway",
+    "services/decision/src/cip_decision",
 ]
 
 [tool.pytest.ini_options]
@@ -66,6 +67,7 @@ pythonpath = [
     "services/copilot/src",
     "libs/cip_platform/src",
     "services/gateway/src",
+    "services/decision/src",
 ]
 testpaths = ["tests"]
 # The assertion cache cannot be written when the checkout lives on a synced drive
@@ -89,6 +91,7 @@ src = [
     "services/copilot/src",
     "libs/cip_platform/src",
     "services/gateway/src",
+    "services/decision/src",
     "tests",
 ]
 
@@ -126,6 +129,10 @@ ignore = [
 "tests/unit/test_normalization_and_sections.py" = ["RUF001"]
 "tests/unit/test_parsers.py" = ["RUF001"]
 
+# Clinical prose uses en dashes and ranges ("49-96%", "drug-drug"). RUF002 guards against
+# homoglyph confusion in identifiers, which docstrings are not.
+"services/decision/src/cip_decision/**/*.py" = ["RUF002"]
+
 # Framework-mandated signatures: Alembic's include_object hook and FastAPI's lifespan
 # both receive arguments this codebase does not need.
 "migrations/**" = ["ARG001", "N999", "E501"]
@@ -133,7 +140,7 @@ ignore = [
 
 [tool.mypy]
 python_version = "3.11"
-mypy_path = "libs/cip_core/src:services/ingestion/src:services/retrieval/src:services/copilot/src:libs/cip_platform/src:services/gateway/src"
+mypy_path = "libs/cip_core/src:services/ingestion/src:services/retrieval/src:services/copilot/src:libs/cip_platform/src:services/gateway/src:services/decision/src"
 packages = [
     "cip_core",
     "cip_ingestion",
@@ -141,6 +148,7 @@ packages = [
     "cip_copilot",
     "cip_platform",
     "cip_gateway",
+    "cip_decision",
 ]
 warn_unused_configs = true
 warn_redundant_casts = true

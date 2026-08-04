@@ -129,7 +129,7 @@ explicitly out of scope until the core grounded-QA experience is validated in pr
 **Imaging-pixel analysis and genomics** (beyond DICOM study *metadata*, which is already an
 ingestible document type per
 [02-rag-hybrid-retrieval.md §1.1](02-rag-hybrid-retrieval.md#11-document-classification--layout-aware-parsing))
-are likewise explicitly deferred, not silently absent — see the roadmap's Phase 5 modality
+are likewise explicitly deferred, not silently absent — see the roadmap's Phase 8 modality
 extension point ([implementation-roadmap.md](../roadmap/implementation-roadmap.md)) for how a
 future image-embedding or genomic-variant-ontology modality would plug in without a redesign of
 this document's grounding/citation model.

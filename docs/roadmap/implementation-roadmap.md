@@ -230,7 +230,68 @@ Implemented, tested, and benchmarked; see
 - Blue-green and canary automation; the manifests support a rolling update only
 - Distributed tracing emission (the OTLP endpoint is configured; no spans are created)
 
-## Phase 5 — Analytics & Dashboards
+## Phase 5 — Clinical Decision Intelligence (delivered)
+
+Implemented, tested, benchmarked, and evaluated; see
+[phase-5-engineering-report.md](../design/phase-5-engineering-report.md),
+[09-clinical-decision-intelligence.md](../architecture/09-clinical-decision-intelligence.md),
+and [services/decision/README.md](../../services/decision/README.md).
+
+> **The knowledge corpus shipped with this phase has not been clinically reviewed.** The engine
+> is production-grade; the content is demonstration data. See the
+> [clinical safety case](../safety/clinical-safety-case.md).
+
+- [x] Deterministic decision engine — assemble → evaluate → check → score → rank → detect →
+      suppress → explain → gate, with no model in the decision path
+      ([ADR-0022](../design/adr-0022-deterministic-decisions.md))
+- [x] Rules engine over a typed condition AST with **no `eval`**, and three-valued evaluation in
+      which unknown is never read as false
+- [x] Knowledge as versioned, cited, dated YAML — rules, guidelines, interactions, dose limits,
+      risk models, pathways — with a loader that refuses uncited, misspelled, duplicated, or
+      unsupported artifacts ([ADR-0019](../design/adr-0019-knowledge-as-data.md)), enforced by a
+      test that fails the build if a drug name appears in engine code
+- [x] Drug intelligence: interaction, allergy, duplicate therapy, drug–condition, dose ceiling,
+      organ-function, and drug–age checks, with severity and evidence quality kept as
+      independent axes ([ADR-0020](../design/adr-0020-severity-and-evidence.md)) and allergy
+      cross-reactivity declared per class rather than assumed
+- [x] Risk stratification that reports **no score at all** outside a model's population, with
+      the unevaluable contribution carried explicitly
+- [x] Care pathways shaped after FHIR `PlanDefinition`, applicability evaluated by the same
+      rules engine, not-applicable actions retained with their reason
+      ([ADR-0023](../design/adr-0023-fhir-clinical-reasoning.md))
+- [x] Alert suppression as a designed, measured, audited stage: deduplication by clinical
+      concern, per-patient override memory, per-role severity floor, and a volume ceiling —
+      with contraindications exempt from all four
+      ([ADR-0021](../design/adr-0021-alert-fatigue.md))
+- [x] CDS Hooks 2.0 discovery, services, and cards, with `medication-prescribe` implemented
+      *and marked deprecated* so an integrator sees it before building against it
+- [x] SMART-on-FHIR launch context handling that does not require a live FHIR server
+- [x] Event-driven clinical workflows on the Phase 4 event spine, with a notification floor
+      distinct from the display floor
+- [x] Evidence graph rendering guideline → rule → fact → recommendation as a queryable path
+- [x] Human approval gate with no auto-accept path and no flag that disables it
+      ([ADR-0024](../design/adr-0024-human-approval-gate.md))
+- [x] Evaluation framework reporting recall, false positives against forbidden labels, alert
+      burden, and rule coverage side by side and never combined; 5/5 labelled cases at 100%
+      rule coverage
+- [x] Adversarial review: three Blockers and five High findings, each fixed with a regression
+      test; benchmarks and workflow simulations rerun
+
+### Remaining
+
+- **Clinical review of the knowledge corpus.** The largest gap in the phase, and a
+  precondition for any use.
+- **A licensed drug interaction database.** A hand-maintained list does not scale; the
+  maintenance burden is why those products are commercial.
+- **Measurement of alert burden with real clinicians.** The suppression defaults come from
+  published literature, not from this system's behaviour in a service. Override rate is the
+  metric that matters and has never been measured here.
+- CQL support, `RequestGroup` cardinality behaviours, and three-drug interactions
+- HTTP routes serving CDS Hooks from the gateway; the services are exercised in-process
+- Persistence for approval records and the evidence graph — both are in-process and bounded
+- A regulatory assessment. Depending on jurisdiction and claims, this may be a medical device.
+
+## Phase 6 — Analytics & Dashboards
 
 - Analytics warehouse ETL (de-identified aggregate pipeline)
 - Dashboard categories: clinical/pharmacovigilance, operational, governance, usage
@@ -240,7 +301,7 @@ Implemented, tested, and benchmarked; see
 **Exit criteria:** tenant admins and analysts have self-service dashboards without needing
 direct database access.
 
-## Phase 6 — Enterprise Hardening & Compliance Certification
+## Phase 7 — Enterprise Hardening & Compliance Certification
 
 - HITRUST CSF and SOC 2 Type II audits (assessor engaged; cadence and scope tracked alongside the
   Phase 1 third-party security review, not as a newly-introduced process)
@@ -259,7 +320,7 @@ direct database access.
 that require third-party compliance attestation, with a validated cost model and a demonstrated
 (not just designed) offboarding process.
 
-## Phase 5 — Scale & Advanced Retrieval (future)
+## Phase 8 — Scale & Advanced Retrieval (future)
 
 - Multi-region deployment
 - Streaming (near-real-time) analytics warehouse refresh
@@ -275,7 +336,7 @@ that require third-party compliance attestation, with a validated cost model and
   platform accumulates tenant-specific clinical vocabulary; not yet designed, named so it isn't
   discovered as a gap later
 
-## Phase 6+ — Not yet planned (explicitly out of scope, not silently missing)
+## Phase 9+ — Not yet planned (explicitly out of scope, not silently missing)
 
 - Third-party integration / partner marketplace (plugin SDK, external webhook consumers beyond
   the platform's own ingestion pipeline)
@@ -283,7 +344,8 @@ that require third-party compliance attestation, with a validated cost model and
 - Autonomous multi-step clinical decision-making and voice/ambient interfaces (see
   [04-conversational-ai.md §6](../architecture/04-conversational-ai.md#6-not-in-scope-for-phase-01)) —
   any future work here requires its own architecture review given the materially different risk
-  profile from the grounded-QA system designed in Phases 1-4
+  profile from the grounded-QA and human-gated decision-support system designed in
+  Phases 1-5
 
 ## Related documents
 

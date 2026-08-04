@@ -5,7 +5,8 @@
     "services/retrieval/src",
     "services/copilot/src",
     "libs/cip_platform/src",
-    "services/gateway/src"
+    "services/gateway/src",
+    "services/decision/src"
   ],
   "exclude": [
     "**/__pycache__",
@@ -18,7 +19,8 @@
     "services/retrieval/src",
     "services/copilot/src",
     "libs/cip_platform/src",
-    "services/gateway/src"
+    "services/gateway/src",
+    "services/decision/src"
   ],
   "pythonVersion": "3.11",
   "typeCheckingMode": "standard",

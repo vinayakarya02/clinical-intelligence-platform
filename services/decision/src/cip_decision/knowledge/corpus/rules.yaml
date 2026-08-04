@@ -1,0 +1,198 @@
+# ============================================================================================
+# DEMONSTRATION KNOWLEDGE — NOT CLINICALLY REVIEWED — NOT FOR USE WITH REAL PATIENTS
+# ============================================================================================
+#
+# Every artifact here is drawn from well-established, textbook-level pharmacology and carries
+# a citation. That is *not* the same as being clinically reviewed, and this file has not been.
+# It exists to exercise the engine. See docs/safety/clinical-safety-case.md.
+#
+# A real deployment replaces this file entirely with content its own clinical governance has
+# reviewed, versioned, and signed off.
+#
+# Authoring notes:
+#   - severity and evidence_quality are independent (ADR-0020). Severity decides whether an
+#     alert may be suppressed; evidence quality decides how it is worded.
+#   - `concern` groups rules that mean the same clinical thing so they deduplicate into one
+#     alert with several supports, rather than several alerts.
+#   - effective_from / effective_until carry guideline supersession. A rule with no
+#     effective_from is active from the beginning of time, which is usually what you want for
+#     a mechanism that has not changed.
+
+rules:
+  - id: hyperkalemia-on-raas-blockade
+    version: "1.0.0"
+    title: Elevated potassium during RAAS blockade
+    guideline: gl-hyperkalemia-monitoring
+    concern: hyperkalemia-risk
+    tags: [electrolytes, medication-safety]
+    when:
+      all:
+        - compare: { observation: potassium, op: ">", value: 5.0, unit: mmol/L }
+        - any:
+            - has: { kind: medication, name: lisinopril }
+            - has: { kind: medication, name: ramipril }
+            - has: { kind: medication, name: enalapril }
+            - has: { kind: medication, name: losartan }
+            - has: { kind: medication, name: valsartan }
+    recommend: Repeat serum potassium and review RAAS-blocking therapy
+    kind: investigation
+    severity: major
+    evidence_quality: established
+    detail: >
+      ACE inhibitors and angiotensin receptor blockers reduce aldosterone-mediated potassium
+      excretion, so serum potassium can rise during therapy. A confirmed rise warrants
+      rechecking the value and reviewing whether the agent, its dose, or a concomitant
+      potassium-sparing drug should change.
+    citations:
+      - source: FDA prescribing information
+        reference: ACE inhibitor class labelling, warnings — hyperkalemia
+      - source: Textbook pharmacology
+        reference: RAAS blockade and potassium homeostasis
+
+  - id: hyperkalemia-on-potassium-sparing-diuretic
+    version: "1.0.0"
+    title: Elevated potassium during potassium-sparing diuretic therapy
+    guideline: gl-hyperkalemia-monitoring
+    # Same clinical concern as the rule above, so the two deduplicate into one alert carrying
+    # both supports rather than two alerts saying the same thing.
+    concern: hyperkalemia-risk
+    tags: [electrolytes, medication-safety]
+    when:
+      all:
+        - compare: { observation: potassium, op: ">", value: 5.0, unit: mmol/L }
+        - any:
+            - has: { kind: medication, name: spironolactone }
+            - has: { kind: medication, name: eplerenone }
+            - has: { kind: medication, name: amiloride }
+    recommend: Repeat serum potassium and review potassium-sparing diuretic therapy
+    kind: investigation
+    severity: major
+    evidence_quality: established
+    detail: >
+      Aldosterone antagonists and epithelial sodium channel blockers reduce renal potassium
+      excretion. Elevated potassium during therapy warrants confirmation and review.
+    citations:
+      - source: FDA prescribing information
+        reference: Spironolactone labelling, warnings — hyperkalemia
+
+  - id: rising-potassium-trend
+    version: "1.0.0"
+    title: Potassium rising across recent results
+    guideline: gl-hyperkalemia-monitoring
+    concern: hyperkalemia-risk
+    tags: [electrolytes]
+    when:
+      all:
+        - trend: { observation: potassium, direction: rising, minimum_change_ratio: 0.1 }
+        - compare: { observation: potassium, op: ">", value: 4.5, unit: mmol/L }
+    recommend: Potassium is trending upward; consider repeat testing
+    kind: monitoring
+    severity: moderate
+    evidence_quality: probable
+    detail: >
+      A rising trend approaching the upper reference limit is more informative than any single
+      value, and identifies a patient worth rechecking before the value becomes abnormal.
+    citations:
+      - source: Textbook clinical chemistry
+        reference: Serial measurement and trend interpretation
+
+  - id: renal-impairment-metformin
+    version: "1.0.0"
+    title: Metformin during reduced renal function
+    guideline: gl-renal-dosing
+    concern: metformin-renal
+    tags: [renal, medication-safety]
+    when:
+      all:
+        - has: { kind: medication, name: metformin }
+        - compare: { observation: egfr, op: "<", value: 30, unit: mL/min/1.73m2 }
+    recommend: Review metformin; eGFR is below the labelled threshold
+    kind: medication_change
+    severity: contraindicated
+    evidence_quality: established
+    detail: >
+      Metformin is contraindicated below an eGFR of 30 mL/min/1.73m2 because reduced clearance
+      raises the risk of lactic acidosis. This alert is never suppressed regardless of role or
+      alert volume.
+    citations:
+      - source: FDA prescribing information
+        reference: Metformin labelling, contraindications — renal impairment
+
+  - id: nsaid-with-raas-and-diuretic
+    version: "1.0.0"
+    title: Triple therapy affecting renal perfusion
+    guideline: gl-renal-dosing
+    concern: triple-whammy
+    tags: [renal, medication-safety]
+    when:
+      all:
+        - any:
+            - has: { kind: medication, name: ibuprofen }
+            - has: { kind: medication, name: naproxen }
+            - has: { kind: medication, name: diclofenac }
+        - any:
+            - has: { kind: medication, name: lisinopril }
+            - has: { kind: medication, name: ramipril }
+            - has: { kind: medication, name: losartan }
+        - any:
+            - has: { kind: medication, name: furosemide }
+            - has: { kind: medication, name: bendroflumethiazide }
+            - has: { kind: medication, name: indapamide }
+    recommend: NSAID with RAAS blockade and a diuretic increases acute kidney injury risk
+    kind: alert
+    severity: major
+    evidence_quality: established
+    detail: >
+      The combination of an NSAID, a RAAS-blocking agent, and a diuretic is associated with a
+      markedly increased risk of acute kidney injury, particularly during intercurrent illness
+      or volume depletion.
+    citations:
+      - source: Published pharmacovigilance literature
+        reference: NSAID / RAAS / diuretic combination and acute kidney injury
+
+  - id: missing-baseline-renal-function
+    version: "1.0.0"
+    title: RAAS blockade without recent renal function
+    guideline: gl-hyperkalemia-monitoring
+    tags: [renal, monitoring]
+    when:
+      all:
+        - any:
+            - has: { kind: medication, name: lisinopril }
+            - has: { kind: medication, name: ramipril }
+            - has: { kind: medication, name: losartan }
+        - not:
+            has: { kind: observation, name: creatinine, within_days: 180 }
+    recommend: No creatinine recorded in 180 days during RAAS blockade
+    kind: monitoring
+    severity: moderate
+    evidence_quality: established
+    detail: >
+      Renal function and electrolytes are conventionally monitored during RAAS-blocking
+      therapy. The absence of a recent result is a monitoring gap rather than a clinical
+      finding.
+    citations:
+      - source: FDA prescribing information
+        reference: ACE inhibitor class labelling, monitoring
+
+  # A superseded rule, retained to exercise versioning. Its replacement above uses a threshold
+  # of 5.0; this earlier version used 5.5 and expired when the newer one took effect.
+  - id: hyperkalemia-on-raas-blockade
+    version: "0.9.0"
+    title: Elevated potassium during RAAS blockade (superseded)
+    guideline: gl-hyperkalemia-monitoring
+    concern: hyperkalemia-risk
+    tags: [electrolytes]
+    effective_until: "2024-12-31"
+    when:
+      all:
+        - compare: { observation: potassium, op: ">", value: 5.5, unit: mmol/L }
+        - has: { kind: medication, name: lisinopril }
+    recommend: Repeat serum potassium
+    kind: investigation
+    severity: moderate
+    evidence_quality: established
+    detail: Superseded by version 1.0.0, which lowered the threshold and broadened the agents.
+    citations:
+      - source: FDA prescribing information
+        reference: ACE inhibitor class labelling (earlier revision)

@@ -9,7 +9,7 @@ This is not a chatbot demo and not a simple single-store RAG pipeline. It is des
 multi-tenant system with defense-in-depth data isolation, HIPAA-aligned compliance controls, and
 provenance/citation on every generated answer — see [docs/architecture/06-security-compliance.md](docs/architecture/06-security-compliance.md).
 
-## Status: Phase 4 — Production platform implemented
+## Status: Phase 5 — Clinical decision intelligence implemented
 
 Phase 0 (architecture and design) is complete and was put through an adversarial,
 principal-engineer-level production design review — 4 independent reviewers, 74 findings, all
@@ -54,6 +54,23 @@ with a compatibility matrix, and an enterprise CI pipeline. Start at
 [Phase 4 engineering report](docs/design/phase-4-engineering-report.md) records the
 benchmarks, the defects the adversarial pass found, and an honest readiness assessment.
 
+**Phase 5's clinical decision intelligence is implemented and tested**: a deterministic
+decision engine, a rules engine over a typed expression language with no `eval`, a versioned
+cited knowledge base in which no clinical logic lives in code, drug intelligence across seven
+checks, risk stratification that refuses to score outside a model's population, FHIR-shaped
+care pathways, a role-aware alert-suppression layer built around published override rates,
+CDS Hooks 2.0 services and cards, SMART-on-FHIR launch handling, event-driven clinical
+workflows, an evidence graph, an approval gate no recommendation can bypass, and an evaluation
+framework that reports accuracy and alert burden side by side. Start at
+[services/decision/README.md](services/decision/README.md); the
+[Phase 5 engineering report](docs/design/phase-5-engineering-report.md) records the benchmarks,
+the three Blockers the end-to-end run found, and an honest readiness assessment.
+
+**The clinical knowledge corpus shipped with Phase 5 has not been reviewed by a clinician and
+must not be used in the care of real patients.** The engine is production-grade; the content is
+demonstration data that looks authoritative and is not. See the
+[clinical safety case](docs/safety/clinical-safety-case.md).
+
 The analytics layer and the web UI are **not** implemented. Four substitutions are outstanding
 by design and named in the reports rather than papered over: the embedding provider is a
 deterministic lexical baseline, the reranker is a linear feature scorer, the language model is
@@ -91,13 +108,17 @@ Full rationale: [ADR-0001](docs/design/adr-0001-hybrid-graph-vector-retrieval.md
 | **Retrieval service (Phase 2 implementation)** | [services/retrieval/README.md](services/retrieval/README.md) |
 | **Copilot service (Phase 3 implementation)** | [services/copilot/README.md](services/copilot/README.md) |
 | **Platform library (Phase 4 implementation)** | [libs/cip_platform/README.md](libs/cip_platform/README.md) |
+| **Decision service (Phase 5 implementation)** | [services/decision/README.md](services/decision/README.md) |
 | **Gateway composition root** | [services/gateway/README.md](services/gateway/README.md) |
+| Clinical decision intelligence design | [docs/architecture/09-clinical-decision-intelligence.md](docs/architecture/09-clinical-decision-intelligence.md) |
+| **Clinical safety case** (limitations, hazards, controls) | [docs/safety/clinical-safety-case.md](docs/safety/clinical-safety-case.md) |
 | Production platform design | [docs/architecture/08-production-platform.md](docs/architecture/08-production-platform.md) |
 | Operational runbooks (one per alert) | [docs/operations/runbooks/](docs/operations/runbooks/) |
 | Clinical copilot design | [docs/architecture/07-clinical-copilot.md](docs/architecture/07-clinical-copilot.md) |
 | **Phase 2 engineering report** (benchmarks, bugs, readiness) | [docs/design/phase-2-engineering-report.md](docs/design/phase-2-engineering-report.md) |
 | **Phase 3 engineering report** (benchmarks, bugs, readiness) | [docs/design/phase-3-engineering-report.md](docs/design/phase-3-engineering-report.md) |
 | **Phase 4 engineering report** (benchmarks, bugs, readiness) | [docs/design/phase-4-engineering-report.md](docs/design/phase-4-engineering-report.md) |
+| **Phase 5 engineering report** (benchmarks, bugs, readiness) | [docs/design/phase-5-engineering-report.md](docs/design/phase-5-engineering-report.md) |
 | System architecture (context/container diagrams, service inventory) | [docs/architecture/01-system-architecture.md](docs/architecture/01-system-architecture.md) |
 | RAG & hybrid retrieval design | [docs/architecture/02-rag-hybrid-retrieval.md](docs/architecture/02-rag-hybrid-retrieval.md) |
 | Knowledge graph design | [docs/architecture/03-knowledge-graph.md](docs/architecture/03-knowledge-graph.md) |
@@ -169,10 +190,18 @@ clinical-intelligence-platform/
 │   └── nfr.md
 │
 ├── libs/
-│   └── cip_core/                    ✅ Shared platform primitives: config, logging,
-│                                       errors, tenancy, audit, storage, DB connections.
-│                                       One implementation of ADR-0003's tenant-context
-│                                       rule, not nine reimplementations.
+│   ├── cip_core/                    ✅ Shared platform primitives: config, logging,
+│   │                                   errors, tenancy, audit, storage, DB connections.
+│   │                                   One implementation of ADR-0003's tenant-context
+│   │                                   rule, not nine reimplementations.
+│   └── cip_platform/                ✅ Phase 4 production platform library
+│       └── src/cip_platform/
+│           ├── cache/                  Five cache domains, tenant-scoped keys
+│           ├── events/                 Event spine, audit-emitting bus, outbox
+│           ├── tasks/                  Workers, classified retries, dead-lettering
+│           ├── observability/          OTel GenAI conventions, metrics, tracing
+│           ├── security/               API keys, RBAC, rate limits, spend budgets
+│           └── mlops/                  Model and evaluation registries
 ├── services/
 │   ├── ingestion/                   ✅ Phase 1 document-intelligence pipeline
 │   │   └── src/cip_ingestion/
@@ -197,27 +226,47 @@ clinical-intelligence-platform/
 │   │       ├── context.py              Token budget, dedup, citations, graph evidence
 │   │       ├── pipeline.py             Orchestration + no-evidence gate
 │   │       └── demo.py                 End-to-end verification, benchmarks, evaluation
-│   └── copilot/                     ✅ Phase 3 clinical intelligence layer
-│       └── src/cip_copilot/
-│           ├── domain.py               Evidence, Claim, CopilotState, Answer
-│           ├── records.py              FHIR-shaped clinical records + data-source protocol
-│           ├── llm/                    LanguageModel seam + extractive implementation
-│           ├── prompts/                Registry v2: pins, rollback, experiments
-│           ├── memory/                 Working / episodic / semantic tiers
-│           ├── timeline/               Chronological reconstruction
-│           ├── tools/                  Ten clinical tools behind one registry
-│           ├── planner/                Question → validated Plan
-│           ├── reasoning/              Evidence aggregation → claims
-│           ├── validation/             Claim verification (the reflection pass)
-│           ├── safety/                 Five clinical safety detectors
-│           ├── explanations/           Evidence, graph chains, trace, confidence
-│           ├── output/                 Markdown / JSON / API / FHIR renderers
-│           ├── agents/                 The eight pipeline stages
-│           ├── evaluation/             Reasoning, planning, cost metrics
-│           ├── orchestrator.py         Stage sequencing + HITL suspend/resume
-│           └── demo.py                 End-to-end verification and benchmarks
+│   ├── copilot/                     ✅ Phase 3 clinical intelligence layer
+│   │   └── src/cip_copilot/
+│   │       ├── domain.py               Evidence, Claim, CopilotState, Answer
+│   │       ├── records.py              FHIR-shaped clinical records + data-source protocol
+│   │       ├── llm/                    LanguageModel seam + extractive implementation
+│   │       ├── prompts/                Registry v2: pins, rollback, experiments
+│   │       ├── memory/                 Working / episodic / semantic tiers
+│   │       ├── timeline/               Chronological reconstruction
+│   │       ├── tools/                  Ten clinical tools behind one registry
+│   │       ├── planner/                Question → validated Plan
+│   │       ├── reasoning/              Evidence aggregation → claims
+│   │       ├── validation/             Claim verification (the reflection pass)
+│   │       ├── safety/                 Five clinical safety detectors
+│   │       ├── explanations/           Evidence, graph chains, trace, confidence
+│   │       ├── output/                 Markdown / JSON / API / FHIR renderers
+│   │       ├── agents/                 The eight pipeline stages
+│   │       ├── evaluation/             Reasoning, planning, cost metrics
+│   │       ├── orchestrator.py         Stage sequencing + HITL suspend/resume
+│   │       └── demo.py                 End-to-end verification and benchmarks
+│   ├── decision/                    ✅ Phase 5 clinical decision intelligence
+│   │   └── src/cip_decision/
+│   │       ├── domain.py               Facts, severity, evidence quality, provenance
+│   │       ├── rules/                  Typed condition AST (no `eval`) + evaluator
+│   │       ├── knowledge/              Strict loader + the versioned cited YAML corpus
+│   │       ├── drugs/                  Seven drug-safety checks
+│   │       ├── risk/                   Risk models that refuse to score out of population
+│   │       ├── pathways/               FHIR PlanDefinition-shaped care pathways
+│   │       ├── suppression.py          Dedup, override memory, role floor, ceiling
+│   │       ├── contradiction.py        Declared-direction conflict detection
+│   │       ├── evidence_graph/         Guideline → rule → fact → recommendation paths
+│   │       ├── approval/               The review lifecycle nothing bypasses
+│   │       ├── hooks/                  CDS Hooks 2.0 discovery, services, cards
+│   │       ├── smart/                  SMART-on-FHIR launch context
+│   │       ├── engine.py               The decision pipeline
+│   │       ├── workflow/               Event-driven clinical runs
+│   │       ├── evaluation/             Accuracy, alert burden, rule coverage
+│   │       └── demo.py                 End-to-end verification, evaluation, benchmarks
+│   └── gateway/                     ✅ Composition root: health, jobs, scheduler, worker
 ├── migrations/                      ✅ Alembic migrations for the operational store
-├── tests/                           ✅ unit / api / integration / retrieval / copilot
+├── tests/                           ✅ unit / api / integration / retrieval / copilot /
+│                                       platform / decision
 │
 │   # --- later-phase target layout; not yet created ---
 │
