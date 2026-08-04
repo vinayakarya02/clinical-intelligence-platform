@@ -1,0 +1,194 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cip-api
+  namespace: cip
+  labels:
+    app.kubernetes.io/name: cip-api
+    app.kubernetes.io/component: api
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # surge 1 / unavailable 0: capacity never dips below the declared replica count during a
+      # rollout, which matters because this is the only ingress path for clinical queries.
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cip-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cip-api
+        app.kubernetes.io/component: api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: cip-api
+      # Kubernetes' API is not called from application code, so the token is not projected.
+      # A token that is never used is a credential that cannot be stolen.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      # Spread across zones, and *require* spread across nodes. A single-node outage taking
+      # every API replica is the failure this prevents; DoNotSchedule on hostname is safe
+      # because replicas (3) is well under any realistic node count.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: cip-api
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: cip-api
+      containers:
+        - name: api
+          image: ghcr.io/example/cip:0.4.0
+          imagePullPolicy: IfNotPresent
+          args: ["api"]
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: cip-config
+          env:
+            - name: CIP_SECRETS_DIR
+              value: /var/run/secrets/cip
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              # No CPU limit on purpose: a CPU limit throttles rather than evicts, and
+              # throttling a latency-sensitive API produces p99 spikes that look like an
+              # application bug. Memory *is* limited, because unbounded memory is an OOM for
+              # whatever else lands on the node.
+              memory: "1Gi"
+          volumeMounts:
+            - name: secrets
+              mountPath: /var/run/secrets/cip
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          # Three distinct probes, because they answer three different questions.
+          # startup: "has it finished booting?" — generous, so a slow start is not a crash loop
+          startupProbe:
+            httpGet: { path: /health/live, port: http }
+            periodSeconds: 5
+            failureThreshold: 24
+          # liveness: "is it wedged?" — checks only the process, never a dependency. A liveness
+          # probe that checks the database restarts every replica during a database blip,
+          # turning a degradation into an outage.
+          livenessProbe:
+            httpGet: { path: /health/live, port: http }
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # readiness: "should it get traffic?" — checks dependencies, so a replica that cannot
+          # reach its stores is removed from the Service without being killed.
+          readinessProbe:
+            httpGet: { path: /health/ready, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              # Sleep past the endpoint-propagation delay. Without it, kube-proxy on some nodes
+              # still routes to a terminating pod and those requests are refused — the classic
+              # source of 502s on every deploy.
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+      terminationGracePeriodSeconds: 45
+      volumes:
+        - name: secrets
+          secret:
+            secretName: cip-secrets
+            defaultMode: 0400
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cip-api
+  namespace: cip
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cip-api
+  namespace: cip
+  labels:
+    app.kubernetes.io/name: cip-api
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: cip-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cip-api
+  namespace: cip
+spec:
+  # minAvailable as a count, not a percentage: with 3 replicas, "50%" rounds in a way that
+  # permits draining two at once during a node upgrade.
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cip-api
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: cip-api
+  namespace: cip
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cip-api
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleUp:
+      # React quickly to load; a clinical query queueing behind a cold scale-up is a clinician
+      # waiting.
+      stabilizationWindowSeconds: 30
+    scaleDown:
+      # Retreat slowly. Aggressive scale-down after a traffic dip means scaling straight back
+      # up, and the churn costs more than the idle replicas.
+      stabilizationWindowSeconds: 600

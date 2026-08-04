@@ -1,6 +1,6 @@
 # Implementation Roadmap
 
-**Status:** Phases 0–3 delivered. **Phase 1 document-intelligence pipeline, Phase 2
+**Status:** Phases 0–4 delivered. **Phase 1 document-intelligence pipeline, Phase 2
 hybrid retrieval, and Phase 3 clinical copilot are implemented** — see the Phase 1 section below for what
 shipped, what was deliberately deferred, and what remains before the phase can be called
 complete.
@@ -185,7 +185,52 @@ Implemented, tested, and benchmarked; see
 - An LLM planner for question shapes outside the rule set
 - Streaming responses, and a shared memory store for multi-replica deployment
 
-## Phase 4 — Analytics & Dashboards
+## Phase 4 — Production Platform (delivered)
+
+Implemented, tested, and benchmarked; see
+[phase-4-engineering-report.md](../design/phase-4-engineering-report.md),
+[08-production-platform.md](../architecture/08-production-platform.md), and
+[libs/cip_platform/README.md](../../libs/cip_platform/README.md).
+
+- [x] Production Dockerfile (multi-stage, non-root, read-only rootfs) with one image and three
+      entrypoints ([ADR-0017](../design/adr-0017-worker-topology.md)), plus a development
+      compose stack
+- [x] 20 Kubernetes objects: Deployments, StatefulSet, Services, Ingress, ConfigMap, Secret
+      shape, HPA, PDB, NetworkPolicies, restricted Pod Security Standard, and three distinct
+      probe types — validated in CI by a policy script that checks what a schema cannot
+- [x] Five-domain cache (embedding, retrieval, session, prompt, graph) with TTLs, namespace
+      invalidation, and a tenant in every key ([ADR-0014](../design/adr-0014-cache-topology.md))
+- [x] Background workers: six job kinds, classified retries, idempotency, dead-lettering, and
+      a scheduler whose window-derived keys make duplicate enqueues deduplicate
+- [x] Event spine with correlation and causation ids, W3C trace context, and audit emitted by
+      the bus itself ([ADR-0015](../design/adr-0015-event-spine.md))
+- [x] AI observability on the OpenTelemetry GenAI semantic conventions, with local extensions
+      enumerated ([ADR-0016](../design/adr-0016-otel-genai-conventions.md))
+- [x] Monitoring: metric registry with a cardinality guard, Prometheus scrape config, 9 alert
+      rules, a 12-panel Grafana dashboard, and a runbook per alert
+- [x] Security: hashed API keys with constant-time comparison, RBAC, per-tenant and
+      per-principal rate limits, spend budgets ([ADR-0018](../design/adr-0018-cost-governance.md)),
+      secret providers, and configuration that refuses unsafe deployments at startup
+- [x] MLOps: model, embedding, and evaluation registries with promotion, one-call rollback, and
+      a compatibility matrix that refuses an un-evaluated artifact combination
+- [x] CI/CD: format, lint, types, unit tests, integration tests against real services,
+      architecture validation, security and dependency scanning, image build with SBOM and
+      provenance, and manifest policy checks
+- [x] Environment-aware configuration for development, testing, staging, and production
+- [x] Benchmarks across cache, limits, auth, metrics, events, and the end-to-end copilot
+
+### Remaining
+
+- **Validation against real infrastructure.** Nothing has run against a real Redis, broker,
+  Kafka, or Kubernetes cluster; the image has never been built. This is the largest gap in the
+  project.
+- Kafka and Celery backends (protocols and in-memory implementations exist)
+- HTTP routes on the gateway; the middleware is exercised directly, not through a request
+- Load testing — every throughput figure is single-process and sequential
+- Blue-green and canary automation; the manifests support a rolling update only
+- Distributed tracing emission (the OTLP endpoint is configured; no spans are created)
+
+## Phase 5 — Analytics & Dashboards
 
 - Analytics warehouse ETL (de-identified aggregate pipeline)
 - Dashboard categories: clinical/pharmacovigilance, operational, governance, usage
@@ -195,7 +240,7 @@ Implemented, tested, and benchmarked; see
 **Exit criteria:** tenant admins and analysts have self-service dashboards without needing
 direct database access.
 
-## Phase 5 — Enterprise Hardening & Compliance Certification
+## Phase 6 — Enterprise Hardening & Compliance Certification
 
 - HITRUST CSF and SOC 2 Type II audits (assessor engaged; cadence and scope tracked alongside the
   Phase 1 third-party security review, not as a newly-introduced process)

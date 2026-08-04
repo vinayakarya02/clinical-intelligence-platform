@@ -1,0 +1,38 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cip
+  namespace: cip
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-production
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # 8 MiB matches CIP_MAX_REQUEST_BYTES. A mismatch means the proxy rejects with a generic
+    # 413 before the application can return a useful RFC 7807 problem document.
+    nginx.ingress.kubernetes.io/proxy-body-size: "8m"
+    # Longer than the application's own timeout, so the application decides how a slow request
+    # ends rather than the proxy cutting it off with no trace and no metric.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    # A coarse edge limit in front of the per-tenant limiter. This one bounds a flood from a
+    # single address before it reaches application code at all.
+    nginx.ingress.kubernetes.io/limit-rps: "100"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "X-Frame-Options: DENY";
+      more_set_headers "Referrer-Policy: no-referrer";
+      more_set_headers "Strict-Transport-Security: max-age=31536000; includeSubDomains";
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: ["api.cip.example.com"]
+      secretName: cip-tls
+  rules:
+    - host: api.cip.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: cip-api
+                port:
+                  name: http

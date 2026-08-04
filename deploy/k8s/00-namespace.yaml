@@ -1,0 +1,16 @@
+# Namespace with the restricted Pod Security Standard enforced at admission.
+#
+# `enforce` rather than `warn` alone: a warning is a log line nobody reads, and the restricted
+# profile is what makes "runs as non-root, drops all capabilities, no privilege escalation" a
+# property of the cluster rather than of every author remembering. `audit` and `warn` are set
+# to the same level so a rejected pod produces an explanation as well as a rejection.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cip
+  labels:
+    app.kubernetes.io/part-of: clinical-intelligence-platform
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

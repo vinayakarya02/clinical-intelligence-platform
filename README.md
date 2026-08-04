@@ -9,7 +9,7 @@ This is not a chatbot demo and not a simple single-store RAG pipeline. It is des
 multi-tenant system with defense-in-depth data isolation, HIPAA-aligned compliance controls, and
 provenance/citation on every generated answer — see [docs/architecture/06-security-compliance.md](docs/architecture/06-security-compliance.md).
 
-## Status: Phase 3 — Clinical Copilot implemented
+## Status: Phase 4 — Production platform implemented
 
 Phase 0 (architecture and design) is complete and was put through an adversarial,
 principal-engineer-level production design review — 4 independent reviewers, 74 findings, all
@@ -44,17 +44,31 @@ and experiments, and Markdown/JSON/API/FHIR output. Start at
 benchmarks, the eleven defects end-to-end verification found, and an honest readiness
 assessment.
 
-The analytics layer and the web UI are **not** implemented — they are Phase 4+. Three
-substitutions are also outstanding by design and are named in the reports rather than papered
-over: the embedding provider is a deterministic lexical baseline rather than a clinical model,
-the reranker is a linear feature scorer rather than a cross-encoder, and the language model is
-a deterministic extractive composer rather than a real provider. The
+**Phase 4's production platform is implemented and tested**: production Dockerfiles and
+Kubernetes manifests, a five-domain Redis cache with tenant-scoped keys, an event spine that
+emits its own audit records, background workers with classified retries and dead-lettering, AI
+observability on the OpenTelemetry GenAI semantic conventions, Prometheus alerts with a runbook
+per alert, API keys and RBAC and rate limits and spend budgets, model/evaluation registries
+with a compatibility matrix, and an enterprise CI pipeline. Start at
+[libs/cip_platform/README.md](libs/cip_platform/README.md); the
+[Phase 4 engineering report](docs/design/phase-4-engineering-report.md) records the
+benchmarks, the defects the adversarial pass found, and an honest readiness assessment.
+
+The analytics layer and the web UI are **not** implemented. Four substitutions are outstanding
+by design and named in the reports rather than papered over: the embedding provider is a
+deterministic lexical baseline, the reranker is a linear feature scorer, the language model is
+a deterministic extractive composer, and **nothing has yet run against real infrastructure** —
+no Redis, no broker, no cluster. The
 [roadmap](docs/roadmap/implementation-roadmap.md) lists precisely what shipped, what was
 deferred and why.
 
 ```bash
 make install && make services-up && make migrate && make api   # http://localhost:8000/docs
 make check                                                      # lint + type-check + tests
+```
+
+```bash
+docker compose -f docker/docker-compose.yml up -d
 ```
 
 ## Why three retrieval modalities
@@ -76,9 +90,14 @@ Full rationale: [ADR-0001](docs/design/adr-0001-hybrid-graph-vector-retrieval.md
 | **Ingestion service (Phase 1 implementation)** | [services/ingestion/README.md](services/ingestion/README.md) |
 | **Retrieval service (Phase 2 implementation)** | [services/retrieval/README.md](services/retrieval/README.md) |
 | **Copilot service (Phase 3 implementation)** | [services/copilot/README.md](services/copilot/README.md) |
+| **Platform library (Phase 4 implementation)** | [libs/cip_platform/README.md](libs/cip_platform/README.md) |
+| **Gateway composition root** | [services/gateway/README.md](services/gateway/README.md) |
+| Production platform design | [docs/architecture/08-production-platform.md](docs/architecture/08-production-platform.md) |
+| Operational runbooks (one per alert) | [docs/operations/runbooks/](docs/operations/runbooks/) |
 | Clinical copilot design | [docs/architecture/07-clinical-copilot.md](docs/architecture/07-clinical-copilot.md) |
 | **Phase 2 engineering report** (benchmarks, bugs, readiness) | [docs/design/phase-2-engineering-report.md](docs/design/phase-2-engineering-report.md) |
 | **Phase 3 engineering report** (benchmarks, bugs, readiness) | [docs/design/phase-3-engineering-report.md](docs/design/phase-3-engineering-report.md) |
+| **Phase 4 engineering report** (benchmarks, bugs, readiness) | [docs/design/phase-4-engineering-report.md](docs/design/phase-4-engineering-report.md) |
 | System architecture (context/container diagrams, service inventory) | [docs/architecture/01-system-architecture.md](docs/architecture/01-system-architecture.md) |
 | RAG & hybrid retrieval design | [docs/architecture/02-rag-hybrid-retrieval.md](docs/architecture/02-rag-hybrid-retrieval.md) |
 | Knowledge graph design | [docs/architecture/03-knowledge-graph.md](docs/architecture/03-knowledge-graph.md) |

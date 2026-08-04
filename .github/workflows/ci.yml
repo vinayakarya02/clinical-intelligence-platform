@@ -1,0 +1,234 @@
+# Continuous integration.
+#
+# Ordered cheapest-first so a formatting mistake fails in seconds rather than after the test
+# suite. The jobs that can run in parallel do; the ones that gate deployment do not start
+# until everything they depend on has passed.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege by default. Individual jobs widen this only where they must — the image
+# build needs `packages: write`, and nothing else does.
+permissions:
+  contents: read
+
+concurrency:
+  # Cancel superseded runs on a branch, but never on main: a cancelled main run leaves no
+  # record of whether that commit was ever green.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  static:
+    name: format · lint · types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install pyright
+      - name: Format check
+        run: ruff format --check .
+      - name: Lint
+        run: ruff check --output-format=github .
+      - name: Type check
+        run: pyright
+
+  test:
+    name: unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Test
+        run: pytest tests -q --cov=cip_core --cov=cip_ingestion --cov=cip_retrieval --cov=cip_copilot --cov=cip_platform --cov=cip_gateway --cov-report=term-missing
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: .coverage
+          if-no-files-found: ignore
+
+  integration:
+    name: integration tests
+    runs-on: ubuntu-latest
+    # Real backing services. These tests are skipped in the unit job and are the only place
+    # the Cypher, Atlas-shaped, and RLS paths actually execute.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: cip
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: cip
+        options: >-
+          --health-cmd "pg_isready -U cip" --health-interval 10s
+          --health-timeout 5s --health-retries 5
+        ports: ["5432:5432"]
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 10s
+          --health-timeout 5s --health-retries 5
+        ports: ["6379:6379"]
+      neo4j:
+        image: neo4j:5-community
+        env:
+          NEO4J_AUTH: neo4j/citestpassword
+        options: >-
+          --health-cmd "wget -qO- http://localhost:7474 || exit 1"
+          --health-interval 15s --health-timeout 10s --health-retries 10
+        ports: ["7687:7687", "7474:7474"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Migrate
+        env:
+          CIP_POSTGRES_DSN: postgresql+asyncpg://cip:ci@localhost:5432/cip
+        run: python -m cip_ingestion.cli db upgrade
+      - name: Integration tests
+        env:
+          CIP_RUN_INTEGRATION: "1"
+          CIP_POSTGRES_DSN: postgresql+asyncpg://cip:ci@localhost:5432/cip
+          CIP_REDIS_URL: redis://localhost:6379/0
+          CIP_NEO4J_URI: bolt://localhost:7687
+          CIP_NEO4J_USER: neo4j
+          CIP_NEO4J_PASSWORD: citestpassword
+        run: pytest tests -q -m integration
+
+  architecture:
+    name: architecture validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      # The module-boundary and dependency-direction rules. An architectural rule nobody
+      # checks is an architectural rule that stops holding, so it is a CI gate rather than a
+      # paragraph in an ADR.
+      - name: Module boundaries and dependency direction
+        run: pytest tests -q -k "ModuleBoundaries or PlatformBoundary or Architecture"
+
+  security:
+    name: security · dependency scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install bandit pip-audit
+      # Static analysis for common insecure patterns. `-ll` reports medium and high only:
+      # low-severity findings on a codebase this size are almost entirely false positives,
+      # and a scan nobody reads is a scan that gates nothing.
+      - name: Static security analysis
+        run: bandit -r libs services -ll -x tests
+      - name: Dependency vulnerability scan
+        run: pip-audit --strict
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  manifests:
+    name: manifest validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Kubernetes manifests
+        uses: instrumenta/kubeval-action@master
+        with:
+          files: deploy/k8s
+      - name: Lint Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: docker/Dockerfile
+      # Policy checks the schema cannot express: non-root, dropped capabilities, resource
+      # limits, no `latest` tags. A manifest can be perfectly valid YAML and still ship a
+      # privileged container.
+      - name: Policy checks
+        run: python scripts/validate_manifests.py
+
+  build:
+    name: build image
+    runs-on: ubuntu-latest
+    needs: [static, test, architecture, security, manifests]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: false
+          tags: cip:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # An SBOM and provenance attestation are what make the supply chain auditable —
+          # "which version of which library shipped in the image serving on 3 March" has to be
+          # answerable after the fact.
+          sbom: true
+          provenance: true
+      - name: Scan image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: cip:${{ github.sha }}
+          format: sarif
+          output: trivy.sarif
+          severity: HIGH,CRITICAL
+          # Do not fail on unfixed vulnerabilities: a HIGH with no available patch cannot be
+          # actioned, and a permanently-red pipeline is a pipeline people learn to ignore.
+          ignore-unfixed: true
+      - name: Upload scan
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy.sarif

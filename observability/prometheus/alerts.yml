@@ -1,0 +1,111 @@
+# Alerting rules.
+#
+# Every rule alerts on a *symptom a user would notice*, not on a cause. "CPU is high" is not
+# an alert; "answers are slow" is. Causes belong on dashboards, where they are consulted after
+# a symptom has already woken somebody.
+
+groups:
+  - name: availability
+    rules:
+      - alert: ApiDown
+        expr: up{job="cip-api"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "API target {{ $labels.instance }} is not scrapeable"
+          runbook: "docs/operations/runbooks/api-down.md"
+
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(cip_request_duration_seconds_count{status=~"5.."}[5m]))
+            / sum(rate(cip_request_duration_seconds_count[5m])) > 0.05
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Over 5% of requests are failing"
+          runbook: "docs/operations/runbooks/high-error-rate.md"
+
+  - name: latency
+    rules:
+      - alert: SlowAnswers
+        # p95 over 10s. The threshold is a bucket edge, so the quantile is not interpolated
+        # across a bucket that straddles it.
+        expr: |
+          histogram_quantile(
+            0.95, sum(rate(cip_request_duration_seconds_bucket[5m])) by (le)
+          ) > 10
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "p95 answer latency is above 10s"
+          runbook: "docs/operations/runbooks/slow-answers.md"
+
+  - name: ai_quality
+    rules:
+      # The alert that distinguishes this from a generic web service. A rising hallucination
+      # rate is a clinical-safety signal, and it is invisible to every infrastructure metric.
+      - alert: HallucinationRateRising
+        expr: |
+          histogram_quantile(
+            0.5,
+            sum(rate(cip_evaluation_score_bucket{gen_ai_evaluation_name="hallucination_rate"}[30m]))
+              by (le)
+          ) > 0.05
+        for: 15m
+        labels: { severity: critical }
+        annotations:
+          summary: "Median hallucination rate above 5% over 30m"
+          runbook: "docs/operations/runbooks/hallucination-rate.md"
+
+      - alert: AbstentionRateHigh
+        # Abstaining is safe but useless. A spike means retrieval or the corpus broke, not
+        # that the safety layer is working harder.
+        expr: |
+          sum(rate(cip_answers_total{response_mode!="answer"}[15m]))
+            / sum(rate(cip_answers_total[15m])) > 0.4
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "Over 40% of questions are being declined"
+          runbook: "docs/operations/runbooks/high-abstention.md"
+
+      - alert: ConfidenceCollapse
+        expr: |
+          histogram_quantile(
+            0.5, sum(rate(cip_evaluation_score_bucket{gen_ai_evaluation_name="confidence"}[30m])) by (le)
+          ) < 0.4
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "Median answer confidence below 0.4"
+          runbook: "docs/operations/runbooks/low-confidence.md"
+
+  - name: cost_and_capacity
+    rules:
+      - alert: SpendBudgetRejections
+        expr: sum(rate(cip_budget_rejections_total[15m])) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "A tenant has exhausted its daily spend budget"
+          runbook: "docs/operations/runbooks/budget-exhausted.md"
+
+      - alert: CacheHitRateCollapsed
+        # A cache that has silently stopped working looks exactly like a cache with a bad hit
+        # rate; this is what distinguishes them from the outside.
+        expr: |
+          sum(rate(cip_cache_operations_total{cache_result="hit"}[15m]))
+            / sum(rate(cip_cache_operations_total[15m])) < 0.2
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "Cache hit rate below 20%"
+          runbook: "docs/operations/runbooks/cache-degraded.md"
+
+      - alert: DeadLetterQueueGrowing
+        expr: sum(rate(cip_tasks_total{status="dead_lettered"}[15m])) > 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Background jobs are being dead-lettered"
+          runbook: "docs/operations/runbooks/dead-letters.md"

@@ -1,0 +1,163 @@
+# Local development stack.
+#
+# Not a production topology: single replicas, no TLS between services, and default
+# credentials that are visible in this file precisely because they must never be real ones.
+# Production is the Kubernetes manifests in deploy/k8s.
+#
+# `docker compose up -d` then `docker compose run --rm api migrate`.
+
+name: cip
+
+x-app-env: &app-env
+  CIP_ENVIRONMENT: development
+  CIP_CACHE_BACKEND: redis
+  CIP_REDIS_URL: redis://redis:6379/0
+  CIP_QUEUE_BACKEND: celery
+  CIP_BROKER_URL: amqp://cip:devpassword@rabbitmq:5672//
+  CIP_EVENTS_BACKEND: memory
+  CIP_POSTGRES_DSN: postgresql+asyncpg://cip:devpassword@postgres:5432/cip
+  CIP_MONGO_URI: mongodb://cip:devpassword@mongo:27017/cip?authSource=admin
+  CIP_NEO4J_URI: bolt://neo4j:7687
+  CIP_NEO4J_USER: neo4j
+  CIP_NEO4J_PASSWORD: devpassword
+  CIP_OTLP_ENDPOINT: http://otel-collector:4317
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["api"]
+    environment: *app-env
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      mongo: { condition: service_healthy }
+      neo4j: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/live"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["worker"]
+    environment: *app-env
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    # Two replicas locally so idempotency and duplicate delivery are exercised in development
+    # rather than discovered in staging.
+    deploy:
+      replicas: 2
+
+  scheduler:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["scheduler"]
+    environment: *app-env
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+    # Exactly one. Two schedulers enqueue every periodic job twice (ADR-0017).
+    deploy:
+      replicas: 1
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cip
+      POSTGRES_PASSWORD: devpassword
+      POSTGRES_DB: cip
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cip -d cip"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongo:
+    image: mongo:7
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: cip
+      MONGO_INITDB_ROOT_PASSWORD: devpassword
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  neo4j:
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: neo4j/devpassword
+      NEO4J_PLUGINS: '["apoc"]'
+      # The full-text index the graph store queries must exist before retrieval works.
+      NEO4J_db_tx__log_rotation_retention__policy: "100M size"
+    volumes:
+      - neo4j-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    # maxmemory-policy allkeys-lru: this Redis holds only cache, so evicting under pressure is
+    # correct. A Redis that also held queue state would need noeviction, and mixing the two
+    # roles in one instance is how a cache eviction silently drops queued work.
+    command: ["redis-server", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: cip
+      RABBITMQ_DEFAULT_PASS: devpassword
+    ports:
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ../observability/prometheus:/etc/prometheus:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: devpassword
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+    volumes:
+      - ../observability/grafana:/etc/grafana/provisioning/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  postgres-data:
+  mongo-data:
+  neo4j-data:

@@ -1,0 +1,108 @@
+# Default-deny, then explicit allows.
+#
+# Without a NetworkPolicy every pod in the cluster can reach every other pod, which fails any
+# zero-trust review. Default-deny first is the only ordering that is safe: adding allows to a
+# permissive baseline leaves whatever was not enumerated wide open.
+#
+# Requires a CNI that implements NetworkPolicy (Calico, Cilium, Antrea). On a CNI that does
+# not, these objects are accepted by the API server and silently enforce nothing — which is
+# checked by the deployment validation job rather than assumed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: cip
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: cip
+spec:
+  # Every pod needs DNS. Restricted to the kube-dns service rather than "all UDP 53", so a
+  # compromised pod cannot use DNS as an exfiltration channel to an arbitrary resolver.
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-ingress-from-gateway
+  namespace: cip
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: cip-api
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8000
+    # Prometheus scrapes /metrics directly.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: app-egress-to-datastores
+  namespace: cip
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [api, worker, scheduler]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: cip-redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - protocol: TCP
+          port: 4317
+    # Managed Postgres, MongoDB Atlas, and Neo4j Aura are outside the cluster. Egress to them
+    # cannot be expressed as a pod selector, so it is restricted by port and must be narrowed
+    # to the provider's CIDR ranges per environment — an ipBlock here would be a guess.
+    - ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 27017
+        - protocol: TCP
+          port: 7687
+        - protocol: TCP
+          port: 443

@@ -1,0 +1,83 @@
+# Exactly one replica. Two schedulers enqueue every periodic job twice, and a duplicated
+# nightly re-index is expensive rather than merely untidy (ADR-0017).
+#
+# Recreate, not RollingUpdate: a rolling update would briefly run two schedulers, which is the
+# one thing this Deployment exists to prevent.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cip-scheduler
+  namespace: cip
+  labels:
+    app.kubernetes.io/name: cip-scheduler
+    app.kubernetes.io/component: scheduler
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cip-scheduler
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cip-scheduler
+        app.kubernetes.io/component: scheduler
+    spec:
+      serviceAccountName: cip-scheduler
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: scheduler
+          image: ghcr.io/example/cip:0.4.0
+          args: ["scheduler"]
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: cip-config
+          env:
+            - name: CIP_SECRETS_DIR
+              value: /var/run/secrets/cip
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              memory: "512Mi"
+          volumeMounts:
+            - name: secrets
+              mountPath: /var/run/secrets/cip
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            httpGet: { path: /health/live, port: http }
+            periodSeconds: 30
+            failureThreshold: 3
+      volumes:
+        - name: secrets
+          secret:
+            secretName: cip-secrets
+            defaultMode: 0400
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cip-scheduler
+  namespace: cip
+automountServiceAccountToken: false

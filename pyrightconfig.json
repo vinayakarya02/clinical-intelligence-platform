@@ -3,7 +3,9 @@
     "libs/cip_core/src",
     "services/ingestion/src",
     "services/retrieval/src",
-    "services/copilot/src"
+    "services/copilot/src",
+    "libs/cip_platform/src",
+    "services/gateway/src"
   ],
   "exclude": [
     "**/__pycache__",
@@ -14,7 +16,9 @@
     "libs/cip_core/src",
     "services/ingestion/src",
     "services/retrieval/src",
-    "services/copilot/src"
+    "services/copilot/src",
+    "libs/cip_platform/src",
+    "services/gateway/src"
   ],
   "pythonVersion": "3.11",
   "typeCheckingMode": "standard",

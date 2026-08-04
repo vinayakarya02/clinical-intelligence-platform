@@ -1,0 +1,89 @@
+# Redis as a StatefulSet.
+#
+# StatefulSet rather than Deployment for the stable network identity — a cache client
+# configured against `cip-redis-0.cip-redis` keeps working across a reschedule, where a
+# Deployment's pod name changes.
+#
+# This holds *only* cache. `allkeys-lru` is therefore correct: evicting under memory pressure
+# loses a cache entry and nothing else. A Redis that also held queue state would need
+# `noeviction`, and mixing the two roles in one instance is how a cache eviction silently
+# drops queued work.
+apiVersion: v1
+kind: Service
+metadata:
+  name: cip-redis
+  namespace: cip
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: cip-redis
+  ports:
+    - name: redis
+      port: 6379
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: cip-redis
+  namespace: cip
+spec:
+  serviceName: cip-redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cip-redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cip-redis
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          args:
+            - "redis-server"
+            - "--maxmemory"
+            - "1500mb"
+            - "--maxmemory-policy"
+            - "allkeys-lru"
+            - "--save"
+            - ""
+            - "--appendonly"
+            - "no"
+          ports:
+            - name: redis
+              containerPort: 6379
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "1Gi"
+            limits:
+              # Above maxmemory, so Redis evicts on its own policy before the kernel OOM-kills
+              # it. A container limit at or below maxmemory means the OOM killer wins the race
+              # and the whole cache is lost instead of its coldest keys.
+              memory: "2Gi"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            tcpSocket: { port: redis }
+            periodSeconds: 15
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 10
+      volumes:
+        - name: data
+          emptyDir: {}

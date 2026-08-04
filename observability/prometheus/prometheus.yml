@@ -1,0 +1,27 @@
+# Prometheus scrape configuration.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    platform: clinical-intelligence-platform
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: cip-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8000"]
+        labels:
+          component: api
+
+  - job_name: cip-worker
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["worker:8000"]
+        labels:
+          component: worker
+
+  # In-cluster, this is replaced by kubernetes_sd_configs with the prometheus.io/scrape
+  # annotations the Deployments already carry.

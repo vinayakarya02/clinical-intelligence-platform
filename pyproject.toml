@@ -52,6 +52,8 @@ packages = [
     "services/ingestion/src/cip_ingestion",
     "services/retrieval/src/cip_retrieval",
     "services/copilot/src/cip_copilot",
+    "libs/cip_platform/src/cip_platform",
+    "services/gateway/src/cip_gateway",
 ]
 
 [tool.pytest.ini_options]
@@ -62,6 +64,8 @@ pythonpath = [
     "services/ingestion/src",
     "services/retrieval/src",
     "services/copilot/src",
+    "libs/cip_platform/src",
+    "services/gateway/src",
 ]
 testpaths = ["tests"]
 # The assertion cache cannot be written when the checkout lives on a synced drive
@@ -83,6 +87,8 @@ src = [
     "services/ingestion/src",
     "services/retrieval/src",
     "services/copilot/src",
+    "libs/cip_platform/src",
+    "services/gateway/src",
     "tests",
 ]
 
@@ -127,8 +133,15 @@ ignore = [
 
 [tool.mypy]
 python_version = "3.11"
-mypy_path = "libs/cip_core/src:services/ingestion/src:services/retrieval/src:services/copilot/src"
-packages = ["cip_core", "cip_ingestion", "cip_retrieval", "cip_copilot"]
+mypy_path = "libs/cip_core/src:services/ingestion/src:services/retrieval/src:services/copilot/src:libs/cip_platform/src:services/gateway/src"
+packages = [
+    "cip_core",
+    "cip_ingestion",
+    "cip_retrieval",
+    "cip_copilot",
+    "cip_platform",
+    "cip_gateway",
+]
 warn_unused_configs = true
 warn_redundant_casts = true
 warn_unused_ignores = true

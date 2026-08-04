@@ -1,0 +1,25 @@
+# Non-secret configuration. Anything sensitive is a Secret, mounted as files (see 02-secrets).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cip-config
+  namespace: cip
+data:
+  CIP_ENVIRONMENT: "production"
+  CIP_SERVICE_NAME: "clinical-intelligence-platform"
+  CIP_CACHE_BACKEND: "redis"
+  CIP_QUEUE_BACKEND: "celery"
+  CIP_EVENTS_BACKEND: "kafka"
+  CIP_METRICS_ENABLED: "true"
+  CIP_TRACING_ENABLED: "true"
+  # Sampled, not exhaustive: head sampling at 10% keeps the trace backend affordable at
+  # production volume. Errors are tail-sampled by the collector regardless of this ratio.
+  CIP_TRACE_SAMPLE_RATIO: "0.1"
+  # Never true in a deployed environment: prompt and completion text is PHI, and attaching it
+  # to a span exports it to the telemetry backend. PlatformSettings refuses it too — this is
+  # the second of two independent controls.
+  CIP_RECORD_PROMPT_CONTENT: "false"
+  CIP_OTLP_ENDPOINT: "http://otel-collector.observability:4317"
+  CIP_RPM_PER_TENANT: "600"
+  CIP_RPM_PER_PRINCIPAL: "120"
+  CIP_DAILY_BUDGET_USD: "250"

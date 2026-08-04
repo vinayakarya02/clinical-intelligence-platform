@@ -1,0 +1,96 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cip-worker
+  namespace: cip
+  labels:
+    app.kubernetes.io/name: cip-worker
+    app.kubernetes.io/component: worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cip-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cip-worker
+        app.kubernetes.io/component: worker
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: cip-worker
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: ghcr.io/example/cip:0.4.0
+          args: ["worker"]
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: cip-config
+          env:
+            - name: CIP_SECRETS_DIR
+              value: /var/run/secrets/cip
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              memory: "3Gi"
+          volumeMounts:
+            - name: secrets
+              mountPath: /var/run/secrets/cip
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          # No readiness probe: a worker is not behind a Service and takes no inbound traffic,
+          # so readiness has nothing to gate. Liveness only.
+          livenessProbe:
+            httpGet: { path: /health/live, port: http }
+            periodSeconds: 20
+            failureThreshold: 3
+      # Long enough for the slowest in-flight job to finish rather than be killed mid-write.
+      # Must exceed the queue's visibility timeout or a redelivery races the original.
+      terminationGracePeriodSeconds: 120
+      volumes:
+        - name: secrets
+          secret:
+            secretName: cip-secrets
+            defaultMode: 0400
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cip-worker
+  namespace: cip
+automountServiceAccountToken: false
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cip-worker
+  namespace: cip
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cip-worker

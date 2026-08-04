@@ -1,0 +1,19 @@
+# Everything not needed to build. A smaller context is a faster build and a smaller attack
+# surface; .venv and .git in particular are large and carry secrets in their history.
+.git
+.github
+.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+htmlcov
+.coverage
+coverage.xml
+var
+docs
+tests
+*.md
+!README.md
+docker-compose*.yml
