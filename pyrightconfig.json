@@ -1,7 +1,8 @@
 {
   "include": [
     "libs/cip_core/src",
-    "services/ingestion/src"
+    "services/ingestion/src",
+    "services/retrieval/src"
   ],
   "exclude": [
     "**/__pycache__",
@@ -10,7 +11,8 @@
   ],
   "extraPaths": [
     "libs/cip_core/src",
-    "services/ingestion/src"
+    "services/ingestion/src",
+    "services/retrieval/src"
   ],
   "pythonVersion": "3.11",
   "typeCheckingMode": "standard",

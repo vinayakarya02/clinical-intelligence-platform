@@ -50,12 +50,13 @@ cip = "cip_ingestion.cli:main"
 packages = [
     "libs/cip_core/src/cip_core",
     "services/ingestion/src/cip_ingestion",
+    "services/retrieval/src/cip_retrieval",
 ]
 
 [tool.pytest.ini_options]
 # pythonpath lets the suite run from a clean checkout without an editable install,
 # which keeps CI setup to `pip install -r` + `pytest` and avoids install-order flakiness.
-pythonpath = ["libs/cip_core/src", "services/ingestion/src"]
+pythonpath = ["libs/cip_core/src", "services/ingestion/src", "services/retrieval/src"]
 testpaths = ["tests"]
 # The assertion cache cannot be written when the checkout lives on a synced drive
 # (OneDrive/Dropbox rename-locks the directory), and it buys nothing in CI.
@@ -71,7 +72,7 @@ filterwarnings = ["error::DeprecationWarning:cip_.*"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-src = ["libs/cip_core/src", "services/ingestion/src", "tests"]
+src = ["libs/cip_core/src", "services/ingestion/src", "services/retrieval/src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RET", "ARG", "PTH", "RUF"]
@@ -89,6 +90,11 @@ ignore = [
 # these interchangeable.
 "services/ingestion/src/cip_ingestion/parsers/*.py" = ["ARG002"]
 "services/ingestion/src/cip_ingestion/api/security.py" = ["ARG002"]
+"services/retrieval/src/cip_retrieval/embeddings/*.py" = ["ARG002"]
+
+# RoutingRules holds FusionWeights defaults. They are frozen, slotted, and immutable,
+# so the shared-mutable-default hazard RUF009 guards against cannot occur.
+"services/retrieval/src/cip_retrieval/routing.py" = ["RUF009"]
 
 # These modules define and test the ambiguous-character replacement table; the "ambiguous"
 # characters are the subject matter, not an accident.
@@ -103,8 +109,8 @@ ignore = [
 
 [tool.mypy]
 python_version = "3.11"
-mypy_path = "libs/cip_core/src:services/ingestion/src"
-packages = ["cip_core", "cip_ingestion"]
+mypy_path = "libs/cip_core/src:services/ingestion/src:services/retrieval/src"
+packages = ["cip_core", "cip_ingestion", "cip_retrieval"]
 warn_unused_configs = true
 warn_redundant_casts = true
 warn_unused_ignores = true

@@ -1,4 +1,4 @@
-.PHONY: help install services-up services-down migrate api cli test test-integration lint type-check check clean
+.PHONY: help install services-up services-down migrate api cli demo test test-integration lint type-check check clean
 
 PY ?= .venv/bin/python
 ifeq ($(OS),Windows_NT)
@@ -11,10 +11,11 @@ help:
 	@echo "services-down     Stop local backing services"
 	@echo "migrate           Apply Alembic migrations to the configured database"
 	@echo "api               Run the ingestion API with autoreload on :8000"
+	@echo "demo              Run the Phase 2 end-to-end retrieval verification + benchmarks"
 	@echo "test              Run the unit test suite (no external services required)"
 	@echo "test-integration  Run integration tests against live backing services"
 	@echo "lint              Ruff lint + format check"
-	@echo "type-check        mypy"
+	@echo "type-check        pyright"
 	@echo "check             lint + type-check + test"
 
 install:
@@ -35,6 +36,9 @@ migrate:
 api:
 	$(PY) -m uvicorn cip_ingestion.api.app:create_app --factory --reload --port 8000
 
+demo:
+	$(PY) -m cip_retrieval.demo
+
 test:
 	$(PY) -m pytest -q
 
@@ -45,8 +49,11 @@ lint:
 	$(PY) -m ruff check .
 	$(PY) -m ruff format --check .
 
+# pyright rather than mypy: mypy's binary is blocked by Windows Application Control policy
+# on the development machine. The mypy config in pyproject.toml is kept current so other
+# environments can run either.
 type-check:
-	$(PY) -m mypy
+	$(PY) -m pyright
 
 check: lint type-check test
 

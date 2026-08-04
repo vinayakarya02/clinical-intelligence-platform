@@ -141,6 +141,29 @@ CLINICAL_SECTION_PATTERNS: tuple[SectionPattern, ...] = (
         SectionType.NARRATIVE,
         ("imaging", "radiology", "imaging studies", "radiologic studies", "diagnostic imaging"),
     ),
+    # Radiology and other diagnostic reports use their own heading vocabulary. Without
+    # these the findings body — the clinically load-bearing part of the report — falls
+    # through to the document preamble, which silently breaks section filters, the
+    # reranker's section affinity, and citation headings alike. Found by the Phase 2
+    # end-to-end evaluation run, not by any unit test.
+    SectionPattern(
+        "findings",
+        SectionType.NARRATIVE,
+        ("findings", "imaging findings", "examination findings", "gross findings"),
+    ),
+    SectionPattern(
+        "technique",
+        SectionType.NARRATIVE,
+        ("technique", "exam technique", "examination technique"),
+    ),
+    SectionPattern(
+        "comparison", SectionType.NARRATIVE, ("comparison", "comparison studies", "prior studies")
+    ),
+    SectionPattern(
+        "indication",
+        SectionType.NARRATIVE,
+        ("indication", "indications", "clinical indication", "reason for exam"),
+    ),
     SectionPattern(
         "procedures", SectionType.NARRATIVE, ("procedures", "procedure", "operations performed")
     ),

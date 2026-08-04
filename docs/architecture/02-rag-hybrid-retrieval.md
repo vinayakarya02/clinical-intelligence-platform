@@ -1,8 +1,18 @@
 # RAG & Hybrid Retrieval Design
 
-**Status:** Phase 0 — Design only
+**Status:** Phase 2 — retrieval path implemented; generation path still design-only
 **Depends on:** [01-system-architecture.md](01-system-architecture.md), [ADR-0001](../design/adr-0001-hybrid-graph-vector-retrieval.md)
 **Revised after Phase 0 review:** see [phase-0-architecture-review.md](../design/phase-0-architecture-review.md) findings B1–B17.
+
+**Where this document and the implementation differ.** Routing, retrieval, fusion, reranking,
+context assembly, and the no-evidence gate are implemented in
+[services/retrieval](../../services/retrieval/README.md). Three deviations are deliberate and
+recorded in the [Phase 2 engineering report](../design/phase-2-engineering-report.md):
+the vector tier is MongoDB Atlas rather than pgvector ([ADR-0007](../design/adr-0007-vector-store-mongodb-atlas.md));
+the embedding model is a deterministic lexical baseline, not a clinical model; and the
+reranker is an interpretable linear feature scorer, not the cross-encoder specified in §2.3.
+The BM25 tier is currently in-process rather than OpenSearch. Everything below describes the
+target design; the report describes what exists.
 
 ## 1. Ingestion & indexing pipeline
 

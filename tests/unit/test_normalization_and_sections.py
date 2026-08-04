@@ -237,6 +237,29 @@ class TestSectionDetection:
         assert sections[0].canonical_name == "document_preamble"
         assert sections[0].char_start == 0
 
+    def test_detects_radiology_report_sections(self) -> None:
+        """Regression: the findings body used to fall through to the document preamble.
+
+        Radiology reports are a supported document type but used a heading vocabulary the
+        detector did not know, so the clinically load-bearing part of every report was
+        left unsectioned — invisible to section filters and to retrieval ranking alike.
+        """
+        report = (
+            b"RADIOLOGY REPORT\n\nINDICATION\nChest pain.\n\nTECHNIQUE\n"
+            b"Non-contrast CT of the chest.\n\nCOMPARISON\nRadiograph dated 2025-11-04.\n\n"
+            b"FINDINGS\nNo focal consolidation. No pleural effusion.\n\n"
+            b"IMPRESSION\nNo acute cardiopulmonary process.\n"
+        )
+        normalized = normalize_document(TextParser().parse(report))
+        sections = detect_sections(normalized)
+        by_name = {section.canonical_name: section for section in sections}
+
+        assert {"indication", "technique", "comparison", "findings"} <= set(by_name)
+        findings = by_name["findings"]
+        assert "consolidation" in normalized.text[findings.char_start : findings.char_end]
+        # IMPRESSION is the radiology spelling of an assessment and already mapped there.
+        assert "assessment" in by_name
+
     def test_document_without_headings_becomes_one_body_section(self) -> None:
         parsed = TextParser().parse(b"Just some free text with no recognised structure.")
         sections = detect_sections(normalize_document(parsed))

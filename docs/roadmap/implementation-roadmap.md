@@ -100,20 +100,49 @@ against the eval set and a named third-party security review (vendor selected an
 Phase 0/1 transition, not left unnamed at exit-criteria time; review cadence continues quarterly
 into Phase 2+, with a full HITRUST-track assessor engagement beginning in Phase 4).
 
-## Phase 2 — Knowledge Graph & Conversational AI
+## Phase 2 — Retrieval, Knowledge Graph & Conversational AI
 
-- Knowledge Graph Service: entity resolution, graph construction, Leiden community detection with
-  run-ID-based community stability, conflict resolution (`SUPERSEDES` pattern) for contradictory
-  patient facts
-- Neo4j deployment (per [ADR-0002](../design/adr-0002-graph-database-choice.md)), Causal Cluster
-  with read replicas, Redis hot-traversal cache, hop-bounded local search
-- Query router (structured/vector/keyword/graph path selection, concurrent dispatch) and
-  Reciprocal Rank Fusion with cross-source consistency checking
-- Cross-encoder reranking (self-hosted)
+### Delivered — retrieval intelligence layer
+
+Implemented, tested, and benchmarked; see
+[phase-2-engineering-report.md](../design/phase-2-engineering-report.md) and
+[services/retrieval/README.md](../../services/retrieval/README.md).
+
+- [x] Embedding pipeline behind a provider protocol: batching, retry with jittered backoff,
+      caching, deduplication, and a `provider/model/dimensions` key carried on every stored
+      vector so a model change is a re-index rather than a silent mixing of vector spaces
+- [x] Vector store — MongoDB Atlas `$vectorSearch` ([ADR-0007](../design/adr-0007-vector-store-mongodb-atlas.md))
+      with tenant and model filters pushed *inside* the index, plus an exact in-memory backend
+      with identical filter and threshold semantics for development and CI
+- [x] Knowledge graph engine on Neo4j ([ADR-0002](../design/adr-0002-graph-database-choice.md)):
+      ontology-aware node labels, provenance enforced at construction for clinically actionable
+      relationships, confidence scores, hop-bounded traversal
+- [x] Query router (intent → per-strategy weights, concurrent dispatch, widen-when-unsure) and
+      weighted Reciprocal Rank Fusion over per-strategy rankings
+- [x] Reranking — interpretable seven-feature linear scorer behind the `Reranker` protocol
+- [x] Context assembly — token budgeting, content deduplication, citation ordering, attributed
+      graph evidence, and a full retrieval trace
+- [x] Prompt orchestration — versioned templates in a registry, validated at load
+- [x] Evaluation framework — Precision@K, Recall@K, MRR, NDCG, hit rate, context precision/recall,
+      citation accuracy, faithfulness, groundedness, numeric consistency, latency percentiles,
+      graph coverage
+
+### Remaining
+
+- Entity extraction and resolution from ingested text (the graph is currently populated by
+  explicit writes, so its coverage is whatever a separate process wrote)
+- Leiden community detection with run-ID-based community stability, and deferred/lazy community
+  summarization for global search (opt-in trigger + 24h SLA)
+- Conflict resolution (`SUPERSEDES` pattern) for contradictory patient facts
+- Neo4j Causal Cluster with read replicas and a Redis hot-traversal cache
+- Cross-source consistency checking across fused results
+- Cross-encoder reranking (self-hosted) — the feature reranker is the baseline it must beat
+- A clinical embedding model to replace the deterministic lexical baseline
 - Conversational AI Service: session management with context-window/summarization handling,
-  grounding/citation enforcement, deterministic numeric-value verification, guardrails
-- Deferred/lazy community summarization for global search, opt-in trigger + 24h SLA
+  grounding/citation *enforcement* (the metrics exist; nothing blocks on them yet),
+  deterministic numeric-value verification, guardrails
 - Ontology-registry pattern for adding regional ontologies as data, not code
+- A curated, clinician-reviewed eval set — every ranking claim currently rests on 6 cases
 
 **Exit criteria:** multi-hop clinical questions answered with cited, grounded responses;
 measurable accuracy improvement over the Phase 1 vector-only baseline on the eval set, including
