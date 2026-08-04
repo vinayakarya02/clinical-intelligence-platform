@@ -6,7 +6,8 @@
     "services/copilot/src",
     "libs/cip_platform/src",
     "services/gateway/src",
-    "services/decision/src"
+    "services/decision/src",
+    "services/interop/src"
   ],
   "exclude": [
     "**/__pycache__",
@@ -20,7 +21,8 @@
     "services/copilot/src",
     "libs/cip_platform/src",
     "services/gateway/src",
-    "services/decision/src"
+    "services/decision/src",
+    "services/interop/src"
   ],
   "pythonVersion": "3.11",
   "typeCheckingMode": "standard",

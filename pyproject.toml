@@ -55,6 +55,7 @@ packages = [
     "libs/cip_platform/src/cip_platform",
     "services/gateway/src/cip_gateway",
     "services/decision/src/cip_decision",
+    "services/interop/src/cip_interop",
 ]
 
 [tool.pytest.ini_options]
@@ -68,6 +69,7 @@ pythonpath = [
     "libs/cip_platform/src",
     "services/gateway/src",
     "services/decision/src",
+    "services/interop/src",
 ]
 testpaths = ["tests"]
 # The assertion cache cannot be written when the checkout lives on a synced drive
@@ -92,6 +94,7 @@ src = [
     "libs/cip_platform/src",
     "services/gateway/src",
     "services/decision/src",
+    "services/interop/src",
     "tests",
 ]
 
@@ -132,6 +135,10 @@ ignore = [
 # Clinical prose uses en dashes and ranges ("49-96%", "drug-drug"). RUF002 guards against
 # homoglyph confusion in identifiers, which docstrings are not.
 "services/decision/src/cip_decision/**/*.py" = ["RUF002"]
+"services/interop/src/cip_interop/**/*.py" = ["RUF001", "RUF002", "RUF003"]
+# Transforms share one dispatch signature; several legitimately ignore an argument. A uniform
+# table is worth more than per-function signatures that cannot be dispatched over.
+"services/interop/src/cip_interop/mapping/transforms.py" = ["ARG001", "RUF001", "RUF002", "RUF003"]
 
 # Framework-mandated signatures: Alembic's include_object hook and FastAPI's lifespan
 # both receive arguments this codebase does not need.
@@ -140,7 +147,7 @@ ignore = [
 
 [tool.mypy]
 python_version = "3.11"
-mypy_path = "libs/cip_core/src:services/ingestion/src:services/retrieval/src:services/copilot/src:libs/cip_platform/src:services/gateway/src:services/decision/src"
+mypy_path = "libs/cip_core/src:services/ingestion/src:services/retrieval/src:services/copilot/src:libs/cip_platform/src:services/gateway/src:services/decision/src:services/interop/src"
 packages = [
     "cip_core",
     "cip_ingestion",
@@ -149,6 +156,7 @@ packages = [
     "cip_platform",
     "cip_gateway",
     "cip_decision",
+    "cip_interop",
 ]
 warn_unused_configs = true
 warn_redundant_casts = true

@@ -1,0 +1,422 @@
+# ==========================================================================================
+# HL7 v2.x -> FHIR R4 mapping set
+#
+# THIS IS A REFERENCE MAPPING, NOT A SITE MAPPING. Every real interface differs: whether
+# OBX-3 carries LOINC or a local mnemonic, whether PID-19 is populated, what PV1-3 means at
+# that site, and which Z segment holds the thing you actually need. A deployment copies this,
+# adjusts it with the sending site's interface specification in hand, and versions the result.
+#
+# Mapping is data, not code (docs/design/adr-0026-mapping-as-data.md):
+#   - transform names come from a closed set; there are no expressions here
+#   - a target path that is not a real FHIR element fails at load
+#   - two mappings writing one target fail at load
+#   - the version is mandatory, so "what changed about this interface on Tuesday" is answerable
+#
+# Source paths are SEG-field[.component[.subcomponent]], with [*] meaning every repetition.
+#
+# TIMEZONE: every datetime/instant mapping declares the SENDING FACILITY'S UTC offset. HL7 v2
+# timestamps usually omit it and FHIR requires one on any dateTime carrying a time. The value
+# below is a placeholder — SET IT PER INTERFACE. A wrong offset silently shifts every clinical
+# timestamp from that sender, and a lab drawn at 08:00 is recorded as drawn at 03:00.
+# ==========================================================================================
+name: default-v2-r4
+version: "1.0.0"
+description: >
+  Reference mapping from HL7 v2.3-2.5.1 to FHIR R4 for ADT, ORU, ORM, SIU, and DFT.
+  Covers the fields required to build a valid resource plus the demographics the EMPI needs.
+source_versions: ["2.3", "2.3.1", "2.4", "2.5", "2.5.1"]
+
+messages:
+  # ------------------------------------------------------------------------------------
+  # ADT: registration and movement. A01 admit, A03 discharge, A04 register, A08 update.
+  # ------------------------------------------------------------------------------------
+  - message_type: ADT
+    triggers: [A01, A02, A03, A04, A08, A28, A31]
+    produces:
+      - resource: Patient
+        id_source: PID-3.1
+        id_prefix: "pat-"
+        note: >
+          The id comes from the message so a retransmission updates rather than duplicates.
+          PID-3 repeats; the first repetition supplies the id and every repetition becomes an
+          identifier entry.
+        constants:
+          active: true
+        fields:
+          - source: PID-3.1[*]
+            target: identifier[*].value
+            transform: identity
+            note: Every PID-3 repetition, not just the first — the second is often a national id
+          - source: PID-3.4[*]
+            target: identifier[*].system
+            transform: identity
+            note: Assigning authority. Without it an MRN is not comparable across organisations.
+          - source: PID-5.1
+            target: name[0].family
+            transform: identity
+          - source: PID-5.2
+            target: name[0].given[0]
+            transform: identity
+          - source: PID-5.3
+            target: name[0].given[1]
+            transform: identity
+          - source: PID-7
+            target: birthDate
+            transform: date
+          - source: PID-8
+            target: gender
+            transform: sex
+            note: HL7 administrative sex codes to the FHIR gender value set
+          - source: PID-11.1
+            target: address[0].line[0]
+            transform: identity
+          - source: PID-11.3
+            target: address[0].city
+            transform: identity
+          - source: PID-11.4
+            target: address[0].state
+            transform: identity
+          - source: PID-11.5
+            target: address[0].postalCode
+            transform: identity
+          - source: PID-13.1
+            target: telecom[0].value
+            transform: identity
+          - source: PID-30
+            target: deceasedBoolean
+            transform: boolean
+
+      - resource: Encounter
+        id_source: PV1-19.1
+        id_prefix: "enc-"
+        note: >
+          PV1-19 is the visit number. An encounter keyed on it is idempotent across the whole
+          admission, so A02 and A03 update the encounter A01 created.
+        fields:
+          - source: PV1-2
+            target: status
+            transform: code_lookup
+            note: >
+              Patient class is not encounter status, but PV1 carries no status field. This maps
+              the classes a site actually sends; an unmapped class fails loudly rather than
+              defaulting to in-progress, because an encounter wrongly marked finished stops
+              subsequent updates from being applied to it.
+            params:
+              table:
+                I: in-progress
+                O: in-progress
+                E: in-progress
+                P: planned
+                R: in-progress
+                B: in-progress
+                N: planned
+          - source: PV1-2
+            target: class.code
+            transform: code_lookup
+            note: >
+              PV1-2 patient class to the v3 ActEncounterCode that Encounter.class requires in
+              R4. Distinct from status above: class is where the patient is being seen,
+              status is where the encounter has got to.
+            params:
+              table:
+                I: IMP
+                O: AMB
+                E: EMER
+                P: PRENC
+                R: AMB
+                B: OBSENC
+                N: AMB
+          - source: PV1-2
+            target: class.system
+            transform: constant
+            params:
+              value: http://terminology.hl7.org/CodeSystem/v3-ActCode
+          - source: PV1-19.1
+            target: identifier[0].value
+            transform: identity
+          - source: PID-3.1
+            target: subject
+            transform: reference
+            required: true
+            note: >
+              Built with the same prefix the Patient mapping uses, so the reference resolves to
+              the Patient this message also produces. An empty PID-3 fails the Encounter rather
+              than producing one with no subject.
+            params:
+              resource_type: Patient
+              id_prefix: "pat-"
+          - source: PV1-44
+            target: period.start
+            transform: datetime
+            params:
+              timezone: "-05:00"
+          - source: PV1-45
+            target: period.end
+            transform: datetime
+            params:
+              timezone: "-05:00"
+
+  # ------------------------------------------------------------------------------------
+  # ORU: results. One DiagnosticReport per OBR, one Observation per OBX.
+  # ------------------------------------------------------------------------------------
+  - message_type: ORU
+    triggers: [R01, R30]
+    produces:
+      - resource: DiagnosticReport
+        id_source: OBR-3.1
+        id_prefix: "dr-"
+        note: OBR-3 is the filler order number, which is the lab's own stable identifier.
+        fields:
+          - source: OBR-25
+            target: status
+            transform: code_lookup
+            note: >
+              OBR-25 result status. 'C' is a correction and 'X' means the order was cancelled —
+              both must survive, because a corrected result silently stored as final leaves the
+              superseded value looking current.
+            params:
+              table:
+                O: registered
+                I: registered
+                S: partial
+                A: partial
+                P: preliminary
+                F: final
+                C: corrected
+                X: cancelled
+                Y: cancelled
+                Z: unknown
+          - source: OBR-4.1
+            target: code.coding[0].code
+            transform: identity
+          - source: OBR-4.2
+            target: code.coding[0].display
+            transform: identity
+          - source: OBR-4.3
+            target: code.coding[0].system
+            transform: code_lookup
+            params:
+              passthrough_unmapped: true
+              table:
+                LN: http://loinc.org
+                L: urn:local
+          - source: PID-3.1
+            target: subject
+            transform: reference
+            required: true
+            params:
+              resource_type: Patient
+              id_prefix: "pat-"
+          - source: OBR-7
+            target: effectiveDateTime
+            transform: datetime
+            params:
+              timezone: "-05:00"
+            note: Specimen collection time, not report time
+          - source: OBR-22
+            target: issued
+            transform: instant
+            params:
+              timezone: "-05:00"
+
+      - resource: Observation
+        id_source: OBX-1
+        id_prefix: "obs-"
+        per_segment: OBX
+        note: One Observation per OBX segment; id_source reads OBX-1, the set id.
+        fields:
+          - source: OBX-11
+            target: status
+            transform: code_lookup
+            note: >
+              OBX-11 observation result status. 'D' means the result was deleted and 'W' means
+              it was wrong — both map to entered-in-error, which is what stops a retracted
+              value being returned as current.
+            params:
+              table:
+                C: corrected
+                D: entered-in-error
+                F: final
+                I: registered
+                P: preliminary
+                R: preliminary
+                S: partial
+                U: final
+                W: entered-in-error
+                X: cancelled
+          - source: OBX-3.1
+            target: code.coding[0].code
+            transform: identity
+          - source: OBX-3.2
+            target: code.coding[0].display
+            transform: identity
+          - source: OBX-3.3
+            target: code.coding[0].system
+            transform: code_lookup
+            params:
+              passthrough_unmapped: true
+              table:
+                LN: http://loinc.org
+                L: urn:local
+          - source: PID-3.1
+            target: subject
+            transform: reference
+            required: true
+            params:
+              resource_type: Patient
+              id_prefix: "pat-"
+          - source: OBX-5
+            target: valueQuantity.value
+            transform: decimal
+            note: >
+              Non-numeric results ("DETECTED", "<0.5") produce nothing here rather than a
+              fabricated number; the string target below carries them instead.
+          - source: OBX-6.1
+            target: valueQuantity.unit
+            transform: identity
+          - source: OBX-7
+            target: referenceRange[0].text
+            transform: identity
+          - source: OBX-8
+            target: interpretation[0].coding[0].code
+            transform: identity
+          - source: OBX-14
+            target: effectiveDateTime
+            transform: datetime
+            params:
+              timezone: "-05:00"
+
+  # ------------------------------------------------------------------------------------
+  # ORM: orders.
+  # ------------------------------------------------------------------------------------
+  - message_type: ORM
+    triggers: [O01]
+    produces:
+      - resource: ServiceRequest
+        id_source: ORC-2.1
+        id_prefix: "sr-"
+        note: ORC-2 is the placer order number — the ordering system's own identifier.
+        constants:
+          intent: order
+        fields:
+          - source: ORC-1
+            target: status
+            transform: code_lookup
+            note: >
+              ORC-1 order control. CA is a cancellation and must not land as active, or a
+              cancelled order stays on a worklist.
+            params:
+              table:
+                NW: active
+                OK: active
+                SC: active
+                CA: revoked
+                DC: revoked
+                HD: on-hold
+                CM: completed
+                RE: active
+          - source: ORC-2.1
+            target: identifier[0].value
+            transform: identity
+          - source: OBR-4.1
+            target: code.coding[0].code
+            transform: identity
+          - source: OBR-4.2
+            target: code.coding[0].display
+            transform: identity
+          - source: PID-3.1
+            target: subject
+            transform: reference
+            required: true
+            params:
+              resource_type: Patient
+              id_prefix: "pat-"
+          - source: ORC-9
+            target: authoredOn
+            transform: datetime
+            params:
+              timezone: "-05:00"
+          - source: ORC-7.6
+            target: priority
+            transform: code_lookup
+            params:
+              table:
+                S: stat
+                A: asap
+                R: routine
+                P: routine
+                T: routine
+
+  # ------------------------------------------------------------------------------------
+  # SIU: scheduling.
+  # ------------------------------------------------------------------------------------
+  - message_type: SIU
+    triggers: [S12, S13, S14, S15, S26]
+    produces:
+      - resource: Appointment
+        id_source: SCH-1.1
+        id_prefix: "apt-"
+        constants:
+          participant:
+            - status: accepted
+        fields:
+          - source: SCH-25
+            target: status
+            transform: code_lookup
+            params:
+              table:
+                Booked: booked
+                BOOKED: booked
+                Pending: pending
+                Cancelled: cancelled
+                CANCELLED: cancelled
+                Noshow: noshow
+                Complete: fulfilled
+          - source: SCH-1.1
+            target: identifier[0].value
+            transform: identity
+          - source: SCH-11.4
+            target: start
+            transform: instant
+            params:
+              timezone: "-05:00"
+          - source: SCH-11.5
+            target: end
+            transform: instant
+            params:
+              timezone: "-05:00"
+
+  # ------------------------------------------------------------------------------------
+  # DFT: charges.
+  # ------------------------------------------------------------------------------------
+  - message_type: DFT
+    triggers: [P03]
+    produces:
+      - resource: ChargeItem
+        id_source: FT1-2
+        id_prefix: "chg-"
+        per_segment: FT1
+        constants:
+          status: billable
+        fields:
+          - source: FT1-7.1
+            target: code.coding[0].code
+            transform: identity
+          - source: FT1-7.2
+            target: code.coding[0].display
+            transform: identity
+          - source: PID-3.1
+            target: subject
+            transform: reference
+            required: true
+            params:
+              resource_type: Patient
+              id_prefix: "pat-"
+          - source: FT1-4
+            target: occurrenceDateTime
+            transform: datetime
+            params:
+              timezone: "-05:00"
+          - source: FT1-10
+            target: quantity.value
+            transform: decimal

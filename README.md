@@ -9,7 +9,7 @@ This is not a chatbot demo and not a simple single-store RAG pipeline. It is des
 multi-tenant system with defense-in-depth data isolation, HIPAA-aligned compliance controls, and
 provenance/citation on every generated answer — see [docs/architecture/06-security-compliance.md](docs/architecture/06-security-compliance.md).
 
-## Status: Phase 5 — Clinical decision intelligence implemented
+## Status: Phase 6 — Clinical ecosystem interoperability implemented
 
 Phase 0 (architecture and design) is complete and was put through an adversarial,
 principal-engineer-level production design review — 4 independent reviewers, 74 findings, all
@@ -71,6 +71,26 @@ must not be used in the care of real patients.** The engine is production-grade;
 demonstration data that looks authoritative and is not. See the
 [clinical safety case](docs/safety/clinical-safety-case.md).
 
+**Phase 6's clinical ecosystem interoperability is implemented and tested**: an HL7 v2 engine
+with MLLP framing and a parser that reads delimiters from the message rather than assuming them,
+a FHIR gateway over 18 resource types serving R4 and R5 from one declarative definition set,
+HL7-to-FHIR mapping as versioned data rather than code, an Enterprise Master Patient Index with
+a human review zone and reversible merges, a four-level organisation hierarchy with dated
+purpose-scoped sharing agreements, a deny-by-default consent engine whose break-glass path
+audits before it returns data, a clinical event stream partitioned by resolved person with
+idempotent consumers and replay, an integration engine with classified retries and
+dead-lettering, DICOM identity and worklist reconciliation, population analytics with quality
+measures, Safe Harbor de-identification and a point-in-time feature store, four-audience
+dashboards, closed-loop cross-system workflows, SMART v2 scopes with ABAC and SCIM, and a
+clinical API with asynchronous bulk export. Start at
+[services/interop/README.md](services/interop/README.md); the
+[Phase 6 engineering report](docs/design/phase-6-engineering-report.md) records the benchmarks,
+the three security-relevant Blockers the end-to-end run found, and an honest readiness
+assessment.
+
+**Nothing in Phase 6 has exchanged a message with a real hospital system.** Every conformance
+claim is against a specification document, not against a counterparty.
+
 The analytics layer and the web UI are **not** implemented. Four substitutions are outstanding
 by design and named in the reports rather than papered over: the embedding provider is a
 deterministic lexical baseline, the reranker is a linear feature scorer, the language model is
@@ -109,7 +129,11 @@ Full rationale: [ADR-0001](docs/design/adr-0001-hybrid-graph-vector-retrieval.md
 | **Copilot service (Phase 3 implementation)** | [services/copilot/README.md](services/copilot/README.md) |
 | **Platform library (Phase 4 implementation)** | [libs/cip_platform/README.md](libs/cip_platform/README.md) |
 | **Decision service (Phase 5 implementation)** | [services/decision/README.md](services/decision/README.md) |
+| **Interop service (Phase 6 implementation)** | [services/interop/README.md](services/interop/README.md) |
 | **Gateway composition root** | [services/gateway/README.md](services/gateway/README.md) |
+| Clinical ecosystem interoperability design | [docs/architecture/10-clinical-ecosystem-interoperability.md](docs/architecture/10-clinical-ecosystem-interoperability.md) |
+| **HL7 v2 / FHIR mapping reference** | [docs/integration/hl7-fhir-mapping.md](docs/integration/hl7-fhir-mapping.md) |
+| Multi-region deployment & disaster recovery | [docs/deployment/multi-region-dr.md](docs/deployment/multi-region-dr.md) |
 | Clinical decision intelligence design | [docs/architecture/09-clinical-decision-intelligence.md](docs/architecture/09-clinical-decision-intelligence.md) |
 | **Clinical safety case** (limitations, hazards, controls) | [docs/safety/clinical-safety-case.md](docs/safety/clinical-safety-case.md) |
 | Production platform design | [docs/architecture/08-production-platform.md](docs/architecture/08-production-platform.md) |
@@ -119,6 +143,7 @@ Full rationale: [ADR-0001](docs/design/adr-0001-hybrid-graph-vector-retrieval.md
 | **Phase 3 engineering report** (benchmarks, bugs, readiness) | [docs/design/phase-3-engineering-report.md](docs/design/phase-3-engineering-report.md) |
 | **Phase 4 engineering report** (benchmarks, bugs, readiness) | [docs/design/phase-4-engineering-report.md](docs/design/phase-4-engineering-report.md) |
 | **Phase 5 engineering report** (benchmarks, bugs, readiness) | [docs/design/phase-5-engineering-report.md](docs/design/phase-5-engineering-report.md) |
+| **Phase 6 engineering report** (benchmarks, bugs, readiness) | [docs/design/phase-6-engineering-report.md](docs/design/phase-6-engineering-report.md) |
 | System architecture (context/container diagrams, service inventory) | [docs/architecture/01-system-architecture.md](docs/architecture/01-system-architecture.md) |
 | RAG & hybrid retrieval design | [docs/architecture/02-rag-hybrid-retrieval.md](docs/architecture/02-rag-hybrid-retrieval.md) |
 | Knowledge graph design | [docs/architecture/03-knowledge-graph.md](docs/architecture/03-knowledge-graph.md) |
@@ -263,10 +288,29 @@ clinical-intelligence-platform/
 │   │       ├── workflow/               Event-driven clinical runs
 │   │       ├── evaluation/             Accuracy, alert burden, rule coverage
 │   │       └── demo.py                 End-to-end verification, evaluation, benchmarks
+│   ├── interop/                     ✅ Phase 6 clinical ecosystem interoperability
+│   │   └── src/cip_interop/
+│   │       ├── domain.py               Identifiers, names, purpose of use, source records
+│   │       ├── hl7/                    MLLP, delimiter-aware parser, validation, ACK
+│   │       ├── fhir/                   Definitions, validation, versioned store, bundles
+│   │       ├── orgs.py                 Organisation hierarchy + sharing agreements
+│   │       ├── mapping/                Declarative HL7 to FHIR maps + transforms
+│   │       ├── empi/                   Fellegi-Sunter matching, review, merge, split
+│   │       ├── imaging.py              DICOM identity, PACS refs, worklist reconciliation
+│   │       ├── consent.py              Deny-by-default disclosure decisions, break-glass
+│   │       ├── security.py             SMART v2 scopes, ABAC, SCIM, delegation
+│   │       ├── streaming.py            Per-person partitions, idempotent consumers, replay
+│   │       ├── routing.py              Channels, retries, dead letters, ingest pipeline
+│   │       ├── population.py           Cohorts, prevalence, risk bands, quality measures
+│   │       ├── datalake.py             Bronze/silver/gold, Safe Harbor, feature store
+│   │       ├── dashboards.py           Four audience projections over the stream
+│   │       ├── workflow.py             Closed-loop referrals, orders, discharge
+│   │       ├── api.py                  REST, FHIR, bulk export and import
+│   │       └── demo.py                 End-to-end run, load simulation, benchmarks
 │   └── gateway/                     ✅ Composition root: health, jobs, scheduler, worker
 ├── migrations/                      ✅ Alembic migrations for the operational store
 ├── tests/                           ✅ unit / api / integration / retrieval / copilot /
-│                                       platform / decision
+│                                       platform / decision / interop
 │
 │   # --- later-phase target layout; not yet created ---
 │

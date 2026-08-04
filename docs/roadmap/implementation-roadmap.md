@@ -291,7 +291,94 @@ and [services/decision/README.md](../../services/decision/README.md).
 - Persistence for approval records and the evidence graph — both are in-process and bounded
 - A regulatory assessment. Depending on jurisdiction and claims, this may be a medical device.
 
-## Phase 6 — Analytics & Dashboards
+## Phase 6 — Clinical Ecosystem Interoperability (delivered)
+
+Implemented, tested, benchmarked, and load-simulated; see
+[phase-6-engineering-report.md](../design/phase-6-engineering-report.md),
+[10-clinical-ecosystem-interoperability.md](../architecture/10-clinical-ecosystem-interoperability.md),
+and [services/interop/README.md](../../services/interop/README.md).
+
+> **Nothing in this phase has exchanged a message with a real hospital system.** Every
+> conformance claim is against a specification document, not against a counterparty.
+
+- [x] HL7 v2 engine: MLLP framing with a required frame bound, a scanner that reads delimiters
+      from `MSH-1`/`MSH-2` rather than assuming them, escape decoding on access, repetitions
+      preserved at every level, `Z` segments retained, ADT/ORM/ORU/SIU/DFT profiles, and `AA` /
+      `AE` / `AR` kept distinct because senders' retry logic depends on it
+      ([ADR-0025](../design/adr-0025-hl7-parsing.md))
+- [x] FHIR gateway: 18 resource types as element definitions rather than classes, R4 and R5 from
+      one set with version-specific elements declared, validation covering cardinality,
+      primitive syntax, required bindings, reference targets, choice exclusivity, and
+      unrecognised modifier extensions; versioned storage with weak-ETag optimistic concurrency;
+      atomic transaction and independent batch bundles with `urn:uuid:` resolution; a
+      `CapabilityStatement` generated from what is registered so it can only understate
+- [x] Declarative HL7-to-FHIR mapping refused at load for an unknown transform, a non-existent
+      target element, a missing version, or two mappings writing one target
+      ([ADR-0026](../design/adr-0026-mapping-as-data.md)), enforced by a test that fails the
+      build if an HL7 field path appears in engine code
+- [x] EMPI: Fellegi-Sunter with two thresholds and a **review zone**, correlated field groups so
+      a shared household is not counted twice, missing fields neutral, national identifiers
+      promoting but never demoting, reversible merges, split, and full link history
+      ([ADR-0027](../design/adr-0027-empi-review-not-automerge.md))
+- [x] Multi-organisation architecture: a validated four-kind hierarchy, directional dated
+      purpose-scoped sharing agreements, and a refusal that names which of the four
+      preconditions is missing ([ADR-0030](../design/adr-0030-cross-organisation-sharing.md))
+- [x] Consent: deny-by-default, evaluated at disclosure with a required purpose,
+      `no_consent_on_file` distinct from `denied`, forward-only revocation, and break-glass that
+      writes its audit record **before** returning data
+      ([ADR-0028](../design/adr-0028-consent-deny-by-default.md))
+- [x] Event streaming: partitioned by resolved person, ordered by source sequence rather than
+      wall clock, at-least-once with an idempotency ledger in the consumer, deliberate replay,
+      and ordering violations reported rather than smoothed over
+      ([ADR-0029](../design/adr-0029-event-ordering.md))
+- [x] Integration engine: channels with independent destination queues, retries classified
+      transient vs permanent, a bounded dead-letter queue that counts what it drops, and
+      retransmission suppression on the message control id
+- [x] Imaging: DICOM study/series/instance identity with UID validation, PACS retrieval
+      endpoints, modality worklist reconciliation with an explicit unreconciled queue, and a
+      FHIR `ImagingStudy` projection - **no pixel data is read, stored, or transmitted**
+- [x] Population health: cohorts, prevalence with its denominator, risk-band segmentation
+      including the rising-risk band, and quality measures keeping exclusions and exceptions
+      separate; small cells suppressed
+- [x] Data lake: bronze/silver/gold layering, Safe Harbor de-identification with a manifest
+      naming the method and ruleset version, a limited data set labelled as requiring a data use
+      agreement, and a point-in-time feature store
+      ([ADR-0031](../design/adr-0031-deidentification-safe-harbor.md))
+- [x] Clinical APIs: one canonical model with four projections and authorisation below them,
+      API version in the path and FHIR version by content type, asynchronous bulk export with a
+      manifest stating its retention, and per-line bulk import outcomes
+      ([ADR-0032](../design/adr-0032-api-surface-and-versioning.md))
+- [x] Real-time dashboards: four audience projections over the stream, carrying no patient
+      identifiers
+- [x] Cross-system workflows: referral, lab order, imaging order, and discharge as table-driven
+      `Task` state machines with an explicit terminal set and a per-kind staleness threshold
+- [x] Enterprise security: OIDC/OAuth2 claim validation, SMART v2 scopes parsed as a grammar
+      with granular constraints applied as filters, patient launch context enforced,
+      deny-overrides ABAC, delegation constrained to a subset, and SCIM provisioning that
+      deactivates rather than deletes
+- [x] Observability: correlation and W3C trace context created at ingest, PHI summarised to keys
+      in audit output, and operational metrics for dead letters, ordering violations, consumer
+      lag, review queue depth, and break-glass
+- [x] Multi-region and disaster recovery design with per-service RPO/RTO and a reconciliation
+      procedure ([multi-region-dr.md](../deployment/multi-region-dr.md))
+- [x] Adversarial review: three Blockers and four High findings, each fixed with a regression
+      test; 162 new tests; benchmarks and a 500-message load simulation
+
+### Remaining
+
+- **No counterparty testing.** Not one message has been exchanged with a real EHR, lab, or PACS.
+  This is the largest gap in the phase and no internal testing closes it.
+- **Matching probabilities are unestimated.** The shipped `m`/`u` values are defaults and must be
+  derived from the deployment's own population.
+- **No review queue has ever been worked**, so the design's safety valve is untested in practice.
+- No licensed terminology validation (SNOMED CT, LOINC, RxNorm).
+- JWT signature verification, which needs a JWKS endpoint.
+- Partial FHIR search: no chaining, `_include`, `_has`, or subscriptions - declared absent in the
+  `CapabilityStatement`.
+- DR is designed and never exercised; no failover has been performed.
+- Throughput is single-process and population-dependent.
+
+## Phase 7 — Analytics & Dashboards
 
 - Analytics warehouse ETL (de-identified aggregate pipeline)
 - Dashboard categories: clinical/pharmacovigilance, operational, governance, usage
@@ -301,7 +388,7 @@ and [services/decision/README.md](../../services/decision/README.md).
 **Exit criteria:** tenant admins and analysts have self-service dashboards without needing
 direct database access.
 
-## Phase 7 — Enterprise Hardening & Compliance Certification
+## Phase 8 — Enterprise Hardening & Compliance Certification
 
 - HITRUST CSF and SOC 2 Type II audits (assessor engaged; cadence and scope tracked alongside the
   Phase 1 third-party security review, not as a newly-introduced process)
@@ -320,7 +407,7 @@ direct database access.
 that require third-party compliance attestation, with a validated cost model and a demonstrated
 (not just designed) offboarding process.
 
-## Phase 8 — Scale & Advanced Retrieval (future)
+## Phase 9 — Scale & Advanced Retrieval (future)
 
 - Multi-region deployment
 - Streaming (near-real-time) analytics warehouse refresh
@@ -336,7 +423,7 @@ that require third-party compliance attestation, with a validated cost model and
   platform accumulates tenant-specific clinical vocabulary; not yet designed, named so it isn't
   discovered as a gap later
 
-## Phase 9+ — Not yet planned (explicitly out of scope, not silently missing)
+## Phase 10+ — Not yet planned (explicitly out of scope, not silently missing)
 
 - Third-party integration / partner marketplace (plugin SDK, external webhook consumers beyond
   the platform's own ingestion pipeline)
@@ -345,7 +432,7 @@ that require third-party compliance attestation, with a validated cost model and
   [04-conversational-ai.md §6](../architecture/04-conversational-ai.md#6-not-in-scope-for-phase-01)) —
   any future work here requires its own architecture review given the materially different risk
   profile from the grounded-QA and human-gated decision-support system designed in
-  Phases 1-5
+  Phases 1-6
 
 ## Related documents
 
