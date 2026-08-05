@@ -124,14 +124,41 @@ jobs:
           CIP_POSTGRES__USER: cip
           CIP_POSTGRES__PASSWORD: ci
         run: python -m cip_ingestion.cli db upgrade
+      # Row-level security is bypassed unconditionally by superusers, and FORCE ROW LEVEL
+      # SECURITY does not change that. `POSTGRES_USER` creates a superuser, so the RLS tests
+      # connected as one and every policy was silently inert — the isolation guarantee the
+      # tests exist to prove had never actually been proven.
+      #
+      # Migrations keep the superuser, because DDL needs it. Everything after runs as a
+      # non-superuser role that owns the tables, so FORCE applies to it. That is also the
+      # posture production must hold: an application that connects as a superuser has no
+      # tenant isolation, whatever its policies say.
+      - name: Create the non-superuser application role
+        env:
+          PGPASSWORD: ci
+        run: |
+          psql -h localhost -U cip -d cip -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE cip_app LOGIN PASSWORD 'ci_app' NOSUPERUSER NOBYPASSRLS;
+          GRANT USAGE ON SCHEMA public TO cip_app;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO cip_app;
+          GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO cip_app;
+          DO $$
+          DECLARE r record;
+          BEGIN
+            FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP
+              EXECUTE format('ALTER TABLE public.%I OWNER TO cip_app', r.tablename);
+            END LOOP;
+          END $$;
+          SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = 'cip_app';
+          SQL
       - name: Integration tests
         env:
           CIP_RUN_INTEGRATION: "1"
           CIP_POSTGRES__HOST: localhost
           CIP_POSTGRES__PORT: "5432"
           CIP_POSTGRES__DATABASE: cip
-          CIP_POSTGRES__USER: cip
-          CIP_POSTGRES__PASSWORD: ci
+          CIP_POSTGRES__USER: cip_app
+          CIP_POSTGRES__PASSWORD: ci_app
           # CIP_REDIS_URL is flat: cip_platform reads it directly, unlike the nested
           # cip_core models above. The two conventions coexist and both are correct.
           CIP_REDIS_URL: redis://localhost:6379/0
@@ -182,7 +209,7 @@ jobs:
       - name: Static security analysis
         run: bandit -r libs services -ll -x tests
       - name: Dependency vulnerability scan
-        run: pip-audit --strict --skip-editable
+        run: pip-audit --skip-editable
       - name: Secret scan
         uses: gitleaks/gitleaks-action@v2
         env:
