@@ -378,15 +378,52 @@ and [services/interop/README.md](../../services/interop/README.md).
 - DR is designed and never exercised; no failover has been performed.
 - Throughput is single-process and population-dependent.
 
-## Phase 7 — Analytics & Dashboards
+## Phase 7 — Analytics Warehouse & Self-Service Reporting (delivered)
 
-- Analytics warehouse ETL (de-identified aggregate pipeline)
-- Dashboard categories: clinical/pharmacovigilance, operational, governance, usage
-  (per [05-analytics-dashboard.md](../architecture/05-analytics-dashboard.md))
-- Scheduled report generation
+Implemented, tested, and benchmarked; see
+[phase-7-engineering-report.md](../design/phase-7-engineering-report.md),
+[11-analytics-warehouse.md](../architecture/11-analytics-warehouse.md), and
+[services/analytics/README.md](../../services/analytics/README.md).
 
-**Exit criteria:** tenant admins and analysts have self-service dashboards without needing
-direct database access.
+- [x] Dimensional warehouse: seven facts over six conformed dimensions, one declared grain per
+      fact, declared additivity per measure, and a typed store whose row iterator requires an
+      organisation so a cross-tenant scan is unwritable
+- [x] De-identifying ETL: watermarked and incremental against the source's own cursor with a
+      declared ordering, idempotent via a declared natural key, Safe Harbor applied at load so
+      the warehouse holds no direct identifiers and the salt never enters it
+      ([ADR-0033](../design/adr-0033-deidentify-at-load.md))
+- [x] Semantic layer: 18 metrics declared as versioned data, validated against the schema at
+      load, refusing an unknown column, a ratio with no denominator, a missing disclosure policy,
+      a duplicate key, or a patient-level metric with no subject column
+      ([ADR-0034](../design/adr-0034-metric-is-a-definition.md))
+- [x] Template-only query surface: typed parameters with declared bounds, permitted groupings, a
+      quasi-identifier budget, and a required scope — no free-form SQL anywhere
+      ([ADR-0035](../design/adr-0035-no-free-form-queries.md))
+- [x] Statistical disclosure control: primary suppression, complementary suppression so a
+      withheld cell cannot be recovered by subtraction, total suppression, and refusal when no
+      combination is safe ([ADR-0036](../design/adr-0036-complementary-suppression.md))
+- [x] The four Phase 0 dashboard categories — clinical/pharmacovigilance, operational,
+      governance, usage — composed from metric keys, with a failed tile rendered as a failed tile
+      rather than silently dropped
+- [x] Scheduled reports: declared schedules in UTC with catch-up, a declared run-as principal,
+      Markdown/CSV/JSON rendering carrying lineage and suppression notes, and delivery of a
+      failure notice when a run fails
+- [x] `/analytics/*` API matching the Phase 0 OpenAPI declaration, read-only by construction,
+      with freshness in a header and refusals that name their cause
+- [x] Adversarial review: one Blocker and three High findings, each fixed with a regression test;
+      89 new tests; benchmarks
+
+### Remaining
+
+- **The loaders are not wired to the Phase 1-6 stores.** The contract is exercised against
+  generated extracts; until they read the live systems the warehouse is empty, which `health()`
+  reports as `503 warehouse-empty` rather than answering every question with zero.
+- No warehouse product behind the store contract (BigQuery/Synapse/Redshift).
+- No scheduler runtime: `due()` decides what should run, and something must call it.
+- No analytics UI; the API returns JSON.
+- Metric definitions are plausible and unreviewed by a clinical or pharmacovigilance specialist.
+- Cell suppression does not defend against differencing across many correlated queries, and
+  differential privacy is not claimed.
 
 ## Phase 8 — Enterprise Hardening & Compliance Certification
 
@@ -432,7 +469,7 @@ that require third-party compliance attestation, with a validated cost model and
   [04-conversational-ai.md §6](../architecture/04-conversational-ai.md#6-not-in-scope-for-phase-01)) —
   any future work here requires its own architecture review given the materially different risk
   profile from the grounded-QA and human-gated decision-support system designed in
-  Phases 1-6
+  Phases 1-7
 
 ## Related documents
 

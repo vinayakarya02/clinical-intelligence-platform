@@ -56,6 +56,7 @@ packages = [
     "services/gateway/src/cip_gateway",
     "services/decision/src/cip_decision",
     "services/interop/src/cip_interop",
+    "services/analytics/src/cip_analytics",
 ]
 
 [tool.pytest.ini_options]
@@ -70,6 +71,7 @@ pythonpath = [
     "services/gateway/src",
     "services/decision/src",
     "services/interop/src",
+    "services/analytics/src",
 ]
 testpaths = ["tests"]
 # The assertion cache cannot be written when the checkout lives on a synced drive
@@ -95,6 +97,7 @@ src = [
     "services/gateway/src",
     "services/decision/src",
     "services/interop/src",
+    "services/analytics/src",
     "tests",
 ]
 
@@ -136,6 +139,7 @@ ignore = [
 # homoglyph confusion in identifiers, which docstrings are not.
 "services/decision/src/cip_decision/**/*.py" = ["RUF002"]
 "services/interop/src/cip_interop/**/*.py" = ["RUF001", "RUF002", "RUF003"]
+"services/analytics/src/cip_analytics/**/*.py" = ["RUF001", "RUF002", "RUF003"]
 # Transforms share one dispatch signature; several legitimately ignore an argument. A uniform
 # table is worth more than per-function signatures that cannot be dispatched over.
 "services/interop/src/cip_interop/mapping/transforms.py" = ["ARG001", "RUF001", "RUF002", "RUF003"]
@@ -147,7 +151,7 @@ ignore = [
 
 [tool.mypy]
 python_version = "3.11"
-mypy_path = "libs/cip_core/src:services/ingestion/src:services/retrieval/src:services/copilot/src:libs/cip_platform/src:services/gateway/src:services/decision/src:services/interop/src"
+mypy_path = "libs/cip_core/src:services/ingestion/src:services/retrieval/src:services/copilot/src:libs/cip_platform/src:services/gateway/src:services/decision/src:services/interop/src:services/analytics/src"
 packages = [
     "cip_core",
     "cip_ingestion",
@@ -157,6 +161,7 @@ packages = [
     "cip_gateway",
     "cip_decision",
     "cip_interop",
+    "cip_analytics",
 ]
 warn_unused_configs = true
 warn_redundant_casts = true

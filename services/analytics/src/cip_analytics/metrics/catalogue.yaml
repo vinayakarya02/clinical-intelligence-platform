@@ -1,0 +1,418 @@
+# ==========================================================================================
+# Metric catalogue
+#
+# A metric is DECLARED HERE AND NOWHERE ELSE (docs/design/adr-0034-metric-is-a-definition.md).
+# Dashboards and reports reference a key; they cannot express an aggregation of their own.
+# That is what stops two dashboards disagreeing about the same number.
+#
+# Every metric must declare a disclosure policy. There is no default, because a default means
+# an unclassified metric is published at whatever somebody chose once and nobody revisits.
+#
+# `allowed_group_by` is deliberately restrictive: a metric groupable by every quasi-identifier
+# its fact carries is one that can be used to single somebody out.
+#
+# THE CLINICAL CONTENT HERE IS DEMONSTRATION DATA. Adverse-event codes, denominators, and
+# thresholds have not been reviewed by a clinician or a pharmacovigilance specialist.
+# ==========================================================================================
+version: "1.0.0"
+
+metrics:
+  # ------------------------------------------------------------------------------------
+  # CLINICAL / PHARMACOVIGILANCE
+  # ------------------------------------------------------------------------------------
+  - key: adverse_event_count
+    version: "1.0.0"
+    title: Adverse events reported
+    category: clinical
+    fact: fact_adverse_event
+    measure: count
+    subject_column: patient_key
+    unit: events
+    description: >
+      Count of suspected drug-event associations. Subject count is patients, not events, so a
+      cell backed by one patient reporting eight events is suppressed as one subject.
+    default_group_by: ["dim_date.month"]
+    allowed_group_by:
+      - dim_date.month
+      - dim_date.quarter
+      - dim_code.display
+      - seriousness
+      - dim_organization.organization_name
+    freshness_tolerance_hours: 24
+    disclosure:
+      minimum_cell_size: 11
+      max_quasi_identifiers: 1
+
+  - key: serious_adverse_event_rate
+    version: "1.0.0"
+    title: Proportion of adverse events that were serious
+    category: clinical
+    fact: fact_adverse_event
+    measure: ratio
+    subject_column: patient_key
+    unit: proportion
+    description: >
+      Serious events over all reported events. A ratio, so it is recomputed at whatever level it
+      is grouped and never averaged from finer ratios.
+    filters:
+      - { column: is_serious, op: is_true }
+    denominator_filters:
+      - { column: event_key, op: not_null }
+    default_group_by: ["dim_date.quarter"]
+    allowed_group_by:
+      - dim_date.quarter
+      - dim_code.display
+    freshness_tolerance_hours: 24
+    disclosure:
+      minimum_cell_size: 11
+      max_quasi_identifiers: 1
+
+  - key: cohort_patient_count
+    version: "1.0.0"
+    title: Distinct patients with an observation
+    category: clinical
+    fact: fact_observation
+    measure: count_distinct
+    column: patient_key
+    subject_column: patient_key
+    unit: patients
+    description: >
+      Cohort sizing. A distinct count, which is non-additive: the same patient in two months is
+      one patient in the year, so months never sum to the year.
+    default_group_by: ["dim_date.month"]
+    allowed_group_by:
+      - dim_date.month
+      - dim_code.display
+      - dim_cohort.age_band
+      - dim_cohort.sex
+    freshness_tolerance_hours: 48
+    disclosure:
+      minimum_cell_size: 11
+      max_quasi_identifiers: 2
+
+  - key: abnormal_result_rate
+    version: "1.0.0"
+    title: Proportion of results flagged abnormal
+    category: clinical
+    fact: fact_observation
+    measure: ratio
+    subject_column: patient_key
+    unit: proportion
+    filters:
+      - { column: is_abnormal, op: is_true }
+    denominator_filters:
+      # Retracted results are excluded from the denominator as well as the numerator. Leaving
+      # them in the denominator alone would depress every rate by the retraction volume.
+      - { column: status, op: not_in, value: ["entered-in-error", "cancelled"] }
+    default_group_by: ["dim_code.display"]
+    allowed_group_by:
+      - dim_code.display
+      - dim_date.month
+      - dim_organization.organization_name
+    freshness_tolerance_hours: 48
+    disclosure:
+      minimum_cell_size: 11
+      max_quasi_identifiers: 1
+
+  - key: mean_length_of_stay
+    version: "1.0.0"
+    title: Mean length of stay
+    category: clinical
+    fact: fact_encounter
+    measure: average
+    column: length_of_stay_days
+    subject_column: patient_key
+    unit: days
+    filters:
+      - { column: encounter_class, op: eq, value: IMP }
+    default_group_by: ["dim_organization.organization_name"]
+    allowed_group_by:
+      - dim_organization.organization_name
+      - dim_date.month
+      - dim_cohort.age_band
+    freshness_tolerance_hours: 48
+    disclosure:
+      minimum_cell_size: 11
+      max_quasi_identifiers: 1
+
+  # ------------------------------------------------------------------------------------
+  # OPERATIONAL
+  # ------------------------------------------------------------------------------------
+  - key: documents_ingested
+    version: "1.0.0"
+    title: Documents ingested
+    category: operational
+    fact: fact_document_ingestion
+    measure: count
+    unit: documents
+    description: >
+      No subject column: documents are not people, so every row is its own subject and the cell
+      size threshold is about volume rather than privacy.
+    default_group_by: ["dim_date.month"]
+    allowed_group_by:
+      - dim_date.month
+      - dim_date.day_of_week
+      - dim_source_system.source_system
+      - document_type
+      - dim_organization.organization_name
+    freshness_tolerance_hours: 6
+    disclosure:
+      minimum_cell_size: 1
+      max_quasi_identifiers: 1
+
+  - key: ingestion_success_rate
+    version: "1.0.0"
+    title: Ingestion success rate
+    category: operational
+    fact: fact_document_ingestion
+    measure: ratio
+    unit: proportion
+    filters:
+      - { column: succeeded, op: is_true }
+    denominator_filters:
+      - { column: document_key, op: not_null }
+    default_group_by: ["dim_source_system.source_system"]
+    allowed_group_by:
+      - dim_source_system.source_system
+      - dim_date.month
+      - document_type
+    freshness_tolerance_hours: 6
+    disclosure:
+      minimum_cell_size: 1
+      max_quasi_identifiers: 1
+
+  - key: ingestion_p95_latency
+    version: "1.0.0"
+    title: Ingestion latency, 95th percentile
+    category: operational
+    fact: fact_document_ingestion
+    measure: percentile
+    column: processing_ms
+    percentile: 0.95
+    unit: ms
+    description: >
+      A percentile, which is non-additive and cannot be averaged across groups. Reported at p95
+      rather than the mean because ingestion latency is long-tailed and the mean hides it.
+    default_group_by: ["dim_source_system.source_system"]
+    allowed_group_by:
+      - dim_source_system.source_system
+      - dim_date.month
+      - document_type
+    freshness_tolerance_hours: 6
+    disclosure:
+      minimum_cell_size: 1
+      max_quasi_identifiers: 1
+
+  - key: mean_extraction_quality
+    version: "1.0.0"
+    title: Mean extraction quality score
+    category: operational
+    fact: fact_document_ingestion
+    measure: average
+    column: quality_score
+    unit: score
+    filters:
+      - { column: succeeded, op: is_true }
+    default_group_by: ["document_type"]
+    allowed_group_by:
+      - document_type
+      - dim_source_system.source_system
+      - dim_date.month
+    freshness_tolerance_hours: 6
+    disclosure:
+      minimum_cell_size: 1
+      max_quasi_identifiers: 1
+
+  - key: etl_job_failure_count
+    version: "1.0.0"
+    title: Failed background job runs
+    category: operational
+    fact: fact_job_run
+    measure: count
+    unit: runs
+    filters:
+      - { column: status, op: eq, value: failed }
+    default_group_by: ["job_kind"]
+    allowed_group_by:
+      - job_kind
+      - dim_date.month
+    freshness_tolerance_hours: 6
+    disclosure:
+      minimum_cell_size: 1
+      max_quasi_identifiers: 0
+
+  # ------------------------------------------------------------------------------------
+  # GOVERNANCE
+  # ------------------------------------------------------------------------------------
+  - key: phi_access_count
+    version: "1.0.0"
+    title: PHI disclosure decisions
+    category: governance
+    fact: fact_phi_access
+    measure: count
+    unit: decisions
+    description: >
+      Every disclosure decision, not only the permitted ones. A log that records refusals alone
+      cannot answer "who saw this record", which is the question HIPAA 164.312(b) exists for.
+    default_group_by: ["outcome"]
+    allowed_group_by:
+      - outcome
+      - purpose
+      - dim_actor_role.role
+      - dim_date.month
+    freshness_tolerance_hours: 12
+    disclosure:
+      minimum_cell_size: 1
+      max_quasi_identifiers: 0
+
+  - key: break_glass_count
+    version: "1.0.0"
+    title: Break-glass accesses
+    category: governance
+    fact: fact_phi_access
+    measure: count
+    unit: accesses
+    description: >
+      Deliberately unsuppressed at a cell size of 1. A single break-glass access is exactly the
+      event a compliance officer must see, and suppressing it to protect the accessing
+      clinician's privacy would defeat the control.
+    filters:
+      - { column: was_break_glass, op: is_true }
+    default_group_by: ["dim_date.month"]
+    allowed_group_by:
+      - dim_date.month
+      - dim_actor_role.role
+      - was_reviewed
+    freshness_tolerance_hours: 6
+    disclosure:
+      minimum_cell_size: 1
+      max_quasi_identifiers: 0
+
+  - key: break_glass_review_rate
+    version: "1.0.0"
+    title: Proportion of break-glass accesses reviewed
+    category: governance
+    fact: fact_phi_access
+    measure: ratio
+    unit: proportion
+    description: >
+      The number that says whether the break-glass control is real. Unreviewed emergency access
+      is indistinguishable from no access control at all.
+    filters:
+      - { column: was_reviewed, op: is_true }
+    denominator_filters:
+      - { column: was_break_glass, op: is_true }
+    default_group_by: ["dim_date.month"]
+    allowed_group_by:
+      - dim_date.month
+      - dim_actor_role.role
+    freshness_tolerance_hours: 6
+    disclosure:
+      minimum_cell_size: 1
+      max_quasi_identifiers: 0
+
+  - key: deidentification_job_status
+    version: "1.0.0"
+    title: De-identification job runs
+    category: governance
+    fact: fact_job_run
+    measure: count
+    unit: runs
+    filters:
+      - { column: job_kind, op: eq, value: deidentification }
+    default_group_by: ["status"]
+    allowed_group_by:
+      - status
+      - dim_date.month
+    freshness_tolerance_hours: 24
+    disclosure:
+      minimum_cell_size: 1
+      max_quasi_identifiers: 0
+
+  # ------------------------------------------------------------------------------------
+  # USAGE
+  # ------------------------------------------------------------------------------------
+  - key: answers_produced
+    version: "1.0.0"
+    title: Copilot answers produced
+    category: usage
+    fact: fact_answer
+    measure: count
+    unit: answers
+    default_group_by: ["dim_date.month"]
+    allowed_group_by:
+      - dim_date.month
+      - question_category
+      - response_mode
+      - dim_actor_role.role
+    freshness_tolerance_hours: 12
+    disclosure:
+      minimum_cell_size: 1
+      max_quasi_identifiers: 0
+
+  - key: grounding_pass_rate
+    version: "1.0.0"
+    title: Proportion of answers that were grounded
+    category: usage
+    fact: fact_answer
+    measure: ratio
+    unit: proportion
+    description: >
+      The quality number for the copilot. Denominator excludes abstentions: an answer the system
+      correctly declined to give is not an ungrounded answer, and counting it as one would
+      penalise the safety behaviour.
+    filters:
+      - { column: is_grounded, op: is_true }
+    denominator_filters:
+      - { column: was_abstained, op: is_false }
+    default_group_by: ["dim_date.month"]
+    allowed_group_by:
+      - dim_date.month
+      - question_category
+      - dim_actor_role.role
+    freshness_tolerance_hours: 12
+    disclosure:
+      minimum_cell_size: 1
+      max_quasi_identifiers: 0
+
+  - key: abstention_rate
+    version: "1.0.0"
+    title: Proportion of questions the copilot declined
+    category: usage
+    fact: fact_answer
+    measure: ratio
+    unit: proportion
+    description: >
+      Reported beside the grounding rate rather than buried. A system that answers everything
+      scores well on grounding and badly on safety, and only the pair distinguishes them.
+    filters:
+      - { column: was_abstained, op: is_true }
+    denominator_filters:
+      - { column: answer_key, op: not_null }
+    default_group_by: ["dim_date.month"]
+    allowed_group_by:
+      - dim_date.month
+      - question_category
+    freshness_tolerance_hours: 12
+    disclosure:
+      minimum_cell_size: 1
+      max_quasi_identifiers: 0
+
+  - key: answer_p95_latency
+    version: "1.0.0"
+    title: Copilot answer latency, 95th percentile
+    category: usage
+    fact: fact_answer
+    measure: percentile
+    column: latency_ms
+    percentile: 0.95
+    unit: ms
+    default_group_by: ["question_category"]
+    allowed_group_by:
+      - question_category
+      - dim_date.month
+      - response_mode
+    freshness_tolerance_hours: 12
+    disclosure:
+      minimum_cell_size: 1
+      max_quasi_identifiers: 0

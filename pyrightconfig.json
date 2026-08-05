@@ -7,7 +7,8 @@
     "libs/cip_platform/src",
     "services/gateway/src",
     "services/decision/src",
-    "services/interop/src"
+    "services/interop/src",
+    "services/analytics/src"
   ],
   "exclude": [
     "**/__pycache__",
@@ -22,7 +23,8 @@
     "libs/cip_platform/src",
     "services/gateway/src",
     "services/decision/src",
-    "services/interop/src"
+    "services/interop/src",
+    "services/analytics/src"
   ],
   "pythonVersion": "3.11",
   "typeCheckingMode": "standard",

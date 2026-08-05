@@ -9,7 +9,7 @@ This is not a chatbot demo and not a simple single-store RAG pipeline. It is des
 multi-tenant system with defense-in-depth data isolation, HIPAA-aligned compliance controls, and
 provenance/citation on every generated answer — see [docs/architecture/06-security-compliance.md](docs/architecture/06-security-compliance.md).
 
-## Status: Phase 6 — Clinical ecosystem interoperability implemented
+## Status: Phase 7 — Analytics warehouse & self-service reporting implemented
 
 Phase 0 (architecture and design) is complete and was put through an adversarial,
 principal-engineer-level production design review — 4 independent reviewers, 74 findings, all
@@ -91,7 +91,21 @@ assessment.
 **Nothing in Phase 6 has exchanged a message with a real hospital system.** Every conformance
 claim is against a specification document, not against a counterparty.
 
-The analytics layer and the web UI are **not** implemented. Four substitutions are outstanding
+**Phase 7's analytics layer is implemented and tested**: a dimensional warehouse of seven
+facts over six conformed dimensions, a watermarked idempotent ETL that de-identifies at load so
+the warehouse holds no direct identifiers, a semantic layer of 18 metrics declared as versioned
+data rather than queries, a template-only query surface with typed parameters and no free-form
+SQL, statistical disclosure control that suppresses complementarily so a withheld cell cannot be
+recovered by subtraction, the four Phase 0 dashboard categories, scheduled report generation with
+delivery, and the `/analytics/*` API. Start at
+[services/analytics/README.md](services/analytics/README.md); the
+[Phase 7 engineering report](docs/design/phase-7-engineering-report.md) records the benchmarks,
+the four defects the end-to-end run and adversarial pass found, and an honest readiness
+assessment.
+
+The **web UI** is not implemented, and the analytics loaders are not yet wired to the Phase 1–6
+stores — the warehouse contract is exercised against generated extracts, and `health()` reports
+`503 warehouse-empty` rather than answering every question with zero. Four substitutions are outstanding
 by design and named in the reports rather than papered over: the embedding provider is a
 deterministic lexical baseline, the reranker is a linear feature scorer, the language model is
 a deterministic extractive composer, and **nothing has yet run against real infrastructure** —
@@ -130,7 +144,9 @@ Full rationale: [ADR-0001](docs/design/adr-0001-hybrid-graph-vector-retrieval.md
 | **Platform library (Phase 4 implementation)** | [libs/cip_platform/README.md](libs/cip_platform/README.md) |
 | **Decision service (Phase 5 implementation)** | [services/decision/README.md](services/decision/README.md) |
 | **Interop service (Phase 6 implementation)** | [services/interop/README.md](services/interop/README.md) |
+| **Analytics service (Phase 7 implementation)** | [services/analytics/README.md](services/analytics/README.md) |
 | **Gateway composition root** | [services/gateway/README.md](services/gateway/README.md) |
+| Analytics warehouse design | [docs/architecture/11-analytics-warehouse.md](docs/architecture/11-analytics-warehouse.md) |
 | Clinical ecosystem interoperability design | [docs/architecture/10-clinical-ecosystem-interoperability.md](docs/architecture/10-clinical-ecosystem-interoperability.md) |
 | **HL7 v2 / FHIR mapping reference** | [docs/integration/hl7-fhir-mapping.md](docs/integration/hl7-fhir-mapping.md) |
 | Multi-region deployment & disaster recovery | [docs/deployment/multi-region-dr.md](docs/deployment/multi-region-dr.md) |
@@ -144,6 +160,7 @@ Full rationale: [ADR-0001](docs/design/adr-0001-hybrid-graph-vector-retrieval.md
 | **Phase 4 engineering report** (benchmarks, bugs, readiness) | [docs/design/phase-4-engineering-report.md](docs/design/phase-4-engineering-report.md) |
 | **Phase 5 engineering report** (benchmarks, bugs, readiness) | [docs/design/phase-5-engineering-report.md](docs/design/phase-5-engineering-report.md) |
 | **Phase 6 engineering report** (benchmarks, bugs, readiness) | [docs/design/phase-6-engineering-report.md](docs/design/phase-6-engineering-report.md) |
+| **Phase 7 engineering report** (benchmarks, bugs, readiness) | [docs/design/phase-7-engineering-report.md](docs/design/phase-7-engineering-report.md) |
 | System architecture (context/container diagrams, service inventory) | [docs/architecture/01-system-architecture.md](docs/architecture/01-system-architecture.md) |
 | RAG & hybrid retrieval design | [docs/architecture/02-rag-hybrid-retrieval.md](docs/architecture/02-rag-hybrid-retrieval.md) |
 | Knowledge graph design | [docs/architecture/03-knowledge-graph.md](docs/architecture/03-knowledge-graph.md) |
@@ -307,10 +324,23 @@ clinical-intelligence-platform/
 │   │       ├── workflow.py             Closed-loop referrals, orders, discharge
 │   │       ├── api.py                  REST, FHIR, bulk export and import
 │   │       └── demo.py                 End-to-end run, load simulation, benchmarks
+│   ├── analytics/                   ✅ Phase 7 analytics warehouse & reporting
+│   │   └── src/cip_analytics/
+│   │       ├── domain.py               Measures, additivity, freshness, disclosure policy
+│   │       ├── warehouse.py            Star schema + typed tenant-scoped store
+│   │       ├── etl.py                  Watermarked, idempotent, de-identifying loads
+│   │       ├── semantic.py             Metric declarations + registry
+│   │       ├── disclosure.py           Primary + complementary cell suppression
+│   │       ├── query.py                Typed templates, execution, suppression
+│   │       ├── boards.py               The four dashboard categories
+│   │       ├── reports.py              Schedules, rendering, delivery
+│   │       ├── api.py                  /analytics/* read-only surface
+│   │       ├── metrics/catalogue.yaml  18 metric declarations
+│   │       └── demo.py                 End-to-end run, attacks, benchmarks
 │   └── gateway/                     ✅ Composition root: health, jobs, scheduler, worker
 ├── migrations/                      ✅ Alembic migrations for the operational store
 ├── tests/                           ✅ unit / api / integration / retrieval / copilot /
-│                                       platform / decision / interop
+│                                       platform / decision / interop / analytics
 │
 │   # --- later-phase target layout; not yet created ---
 │
