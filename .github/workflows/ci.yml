@@ -277,11 +277,20 @@ jobs:
           tags: cip:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          # An SBOM and provenance attestation are what make the supply chain auditable —
-          # "which version of which library shipped in the image serving on 3 March" has to be
-          # answerable after the fact.
-          sbom: true
-          provenance: true
+          # Attestations are OFF here, and deliberately.
+          #
+          # They attach to the image as a manifest list, which the docker exporter cannot load
+          # — so `load: true` and `sbom/provenance: true` are mutually exclusive, and this job
+          # needs `load` to hand the image to the scanner. It also never pushes, so any
+          # attestation it produced would be built and discarded in the same step.
+          #
+          # An SBOM and provenance are what make the supply chain auditable: "which version of
+          # which library shipped in the image serving on 3 March" has to be answerable after
+          # the fact. They belong on the publish path, which does not exist yet — nothing in
+          # this repository pushes an image to a registry. Building that path, with signing and
+          # attestation, is Phase 9 work.
+          sbom: false
+          provenance: false
       - name: Scan image
         uses: aquasecurity/trivy-action@master
         with:
