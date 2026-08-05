@@ -229,6 +229,8 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Default rules plus one narrowly-scoped allowlist; see the file for the reasoning.
+          GITLEAKS_CONFIG: .gitleaks.toml
 
   manifests:
     name: manifest validation

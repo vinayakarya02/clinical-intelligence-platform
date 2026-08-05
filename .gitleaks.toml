@@ -1,0 +1,23 @@
+# Secret-scanning configuration.
+#
+# Starts from the full default rule set and narrows it in exactly one place. A secret scanner
+# that is broadly disabled to silence a false positive stops being a secret scanner, so the
+# exemption below is written to match the shape of the false positive and nothing else.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = """
+The analytics metric catalogue declares each metric with a `key:` field — `key: readmission_rate`,
+`key: ingestion_p95_latency`. gitleaks' generic-api-key rule keys off the word `key` followed by a
+value and flags these as credentials.
+
+The exemption matches a full line consisting of a `key:` field whose value is a lowercase
+snake_case identifier. That shape cannot express a credential: no API key, token, password, or
+private key is lowercase-alphanumeric-with-underscores and unquoted. A real secret pasted into
+this file would still be caught, by this rule and every other one.
+"""
+regexTarget = "line"
+regexes = ['''^\s*-?\s*key:\s*[a-z][a-z0-9_]*\s*$''']
+paths = ['''services/analytics/src/cip_analytics/metrics/.*\.yaml$''']
