@@ -209,7 +209,22 @@ jobs:
       - name: Static security analysis
         run: bandit -r libs services -ll -x tests
       - name: Dependency vulnerability scan
-        run: pip-audit --skip-editable
+        run: |
+          # setuptools is a build-time dependency of the runner image, not of this project;
+          # upgrading it here fixes PYSEC-2026-3447 without pinning a build tool in
+          # pyproject.toml, where it does not belong.
+          python -m pip install --upgrade "setuptools>=83.0.0"
+          #
+          # PYSEC-2026-1325 (ecdsa) has no fix version and is not reachable here. `ecdsa`
+          # arrives solely through python-jose, and the vulnerability is a timing side channel
+          # in ECDSA *signing* — this platform signs with HS256 and verifies OIDC tokens
+          # against a JWKS endpoint, so no ECDSA operation is ever performed.
+          #
+          # This is a suppression, not a resolution, and the real fix is queued: python-jose
+          # has been unmaintained since 2021 and is imported at exactly one site
+          # (services/ingestion/.../api/security.py). Replacing it with PyJWT removes the
+          # dependency, and with it this exception.
+          pip-audit --skip-editable --ignore-vuln PYSEC-2026-1325
       - name: Secret scan
         uses: gitleaks/gitleaks-action@v2
         env:
