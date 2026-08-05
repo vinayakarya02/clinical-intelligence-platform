@@ -1,0 +1,13 @@
+# Dockerfile lint policy.
+ignored:
+  # DL3008 — "pin versions in apt-get install".
+  #
+  # Deliberately not followed. Debian removes superseded package versions from the archive on
+  # every point release, so a pinned `apt-get install tesseract-ocr=5.3.0-2` builds today and
+  # fails with "version not found" within weeks — turning a reproducibility measure into a
+  # broken build. Reproducibility here comes from the pinned base image instead, which is the
+  # layer that actually determines which package versions are available.
+  #
+  # Revisit if the base is ever pinned by digest and a package snapshot mirror is introduced;
+  # at that point pinning becomes both possible and meaningful.
+  - DL3008

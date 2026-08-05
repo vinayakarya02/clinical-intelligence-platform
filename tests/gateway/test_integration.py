@@ -804,3 +804,97 @@ def test_every_declared_wheel_package_is_tracked() -> None:
         if not any(path.startswith(f"{package}/") for path in tracked)
     ]
     assert not missing, f"declared for the wheel but not tracked by git: {missing}"
+
+
+def test_ci_environment_variables_are_actually_read() -> None:
+    """Every ``CIP_*`` variable the CI workflow sets must change the settings it loads.
+
+    The workflow set ``CIP_POSTGRES_DSN``, ``CIP_NEO4J_URI``, ``CIP_NEO4J_USER``, and
+    ``CIP_NEO4J_PASSWORD``. None is read by anything: nested models take a *double* underscore,
+    and there is no ``dsn`` field at all — ``PostgresSettings.dsn()`` is a method that builds
+    the URL from host, user, and password. Migrations therefore ran against the defaults and
+    authenticated as the runner's OS user, and the failure read as a credentials problem rather
+    than a configuration one.
+
+    **Tested by effect, not by rejection.** The obvious check — set the name and see whether
+    pydantic complains — does not work: an unknown *single*-underscore variable matches no
+    field pattern, so pydantic-settings ignores it in silence. Silence is the bug, so the
+    assertion has to be that setting the variable *changes the loaded settings*. Anything that
+    changes nothing is being ignored, whatever its name looks like.
+
+    This is the Phase 8 ConfigMap finding in a second artefact: a variable name is a contract
+    between a deployment file and a settings class, and nothing checks a contract split across
+    two files.
+    """
+    import json
+    import os
+    import re
+    import subprocess
+    import sys
+
+    workflow = (REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    # Assignments only — a name inside a comment is prose, not configuration.
+    assigned = sorted(set(re.findall(r"^\s+(CIP_[A-Z0-9_]+):", workflow, re.M)))
+    assert assigned, "no CIP_* assignments found; has the workflow moved?"
+
+    #: Read by the test harness or by cip_platform rather than by a cip_core model.
+    exempt = {"CIP_RUN_INTEGRATION", "CIP_REDIS_URL", "CIP_BROKER_URL", "CIP_ANALYTICS_SALT"}
+
+    probe = """
+import json
+from pydantic import SecretStr
+from cip_core.config import Settings
+
+
+def reveal(o):
+    if isinstance(o, SecretStr):
+        return o.get_secret_value()
+    if isinstance(o, dict):
+        return {k: reveal(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [reveal(v) for v in o]
+    return str(o)
+
+
+d = reveal(Settings().model_dump())
+# Generated per process when unset, so it differs between two otherwise identical runs.
+d.get("auth", {}).pop("jwt_secret", None)
+print(json.dumps(d, sort_keys=True))
+"""
+    environment = {**os.environ, "PYTHONPATH": str(REPO / "libs/cip_core/src")}
+
+    def load(extra: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            env={**environment, **extra},
+            check=False,
+        )
+
+    clean = load({})
+    assert clean.returncode == 0, clean.stderr[-500:]
+    baseline = clean.stdout
+    assert baseline == load({}).stdout, (
+        "settings are not deterministic; the probe cannot detect drift"
+    )
+    json.loads(baseline)
+
+    def is_read(name: str) -> bool:
+        """Whether setting ``name`` reaches the settings at all.
+
+        Three outcomes, and two of them mean the variable is read. A *validation failure* is
+        one of them: the probe value is a string, so a typed field like ``CIP_POSTGRES__PORT``
+        rejects it — and a field that rejects a value is unambiguously reading it. Only a run
+        that succeeds and produces byte-identical settings proves the variable did nothing.
+        """
+        result = load({name: "probe-value-xyz"})
+        if result.returncode != 0:
+            return True
+        return result.stdout != baseline
+
+    ignored = [name for name in assigned if name not in exempt and not is_read(name)]
+    assert not ignored, (
+        "the CI workflow sets these variables and they change nothing, so they are read by "
+        f"nothing: {ignored}"
+    )

@@ -38,6 +38,11 @@ dev = [
     "pytest-asyncio>=0.24",
     "pytest-cov>=6.0",
     "httpx>=0.28",
+    # The suite runs against in-memory SQLite so repository code, transaction boundaries, and
+    # constraint violations execute as real SQL. It was never declared — present in the
+    # developer venv by accident, absent on any clean machine, so every database-backed test
+    # errored at setup the first time CI ran.
+    "aiosqlite>=0.20",
     # Pinned exactly, not floored. A linter is a gate, and a gate whose version floats
     # gives different verdicts locally and in CI — which it did: `ruff check` passed on the
     # developer machine and failed the build on six untouched files. Bump deliberately.

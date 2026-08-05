@@ -112,17 +112,32 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
       - name: Migrate
+        # Nested settings use a double underscore, and there is no `dsn` field to set:
+        # PostgresSettings.dsn() *builds* the URL from these parts. `CIP_POSTGRES_DSN` was
+        # read by nothing, so migrations ran against the defaults and authenticated as the
+        # runner's OS user. Asserted by
+        # tests/gateway/test_integration.py::test_ci_environment_variables_are_real_settings.
         env:
-          CIP_POSTGRES_DSN: postgresql+asyncpg://cip:ci@localhost:5432/cip
+          CIP_POSTGRES__HOST: localhost
+          CIP_POSTGRES__PORT: "5432"
+          CIP_POSTGRES__DATABASE: cip
+          CIP_POSTGRES__USER: cip
+          CIP_POSTGRES__PASSWORD: ci
         run: python -m cip_ingestion.cli db upgrade
       - name: Integration tests
         env:
           CIP_RUN_INTEGRATION: "1"
-          CIP_POSTGRES_DSN: postgresql+asyncpg://cip:ci@localhost:5432/cip
+          CIP_POSTGRES__HOST: localhost
+          CIP_POSTGRES__PORT: "5432"
+          CIP_POSTGRES__DATABASE: cip
+          CIP_POSTGRES__USER: cip
+          CIP_POSTGRES__PASSWORD: ci
+          # CIP_REDIS_URL is flat: cip_platform reads it directly, unlike the nested
+          # cip_core models above. The two conventions coexist and both are correct.
           CIP_REDIS_URL: redis://localhost:6379/0
-          CIP_NEO4J_URI: bolt://localhost:7687
-          CIP_NEO4J_USER: neo4j
-          CIP_NEO4J_PASSWORD: citestpassword
+          CIP_NEO4J__URI: bolt://localhost:7687
+          CIP_NEO4J__USER: neo4j
+          CIP_NEO4J__PASSWORD: citestpassword
         run: pytest tests -q -m integration
 
   architecture:
@@ -167,7 +182,7 @@ jobs:
       - name: Static security analysis
         run: bandit -r libs services -ll -x tests
       - name: Dependency vulnerability scan
-        run: pip-audit --strict
+        run: pip-audit --strict --skip-editable
       - name: Secret scan
         uses: gitleaks/gitleaks-action@v2
         env:
