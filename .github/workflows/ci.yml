@@ -259,6 +259,9 @@ jobs:
       contents: read
       packages: write
       id-token: write
+      # Required to upload the image scan to code scanning. Without it the upload fails with
+      # "Resource not accessible by integration", which reads like a token problem.
+      security-events: write
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -268,6 +271,9 @@ jobs:
           context: .
           file: docker/Dockerfile
           push: false
+          # Without this, buildx keeps the result in its own cache and never hands it to the
+          # Docker daemon — so the scan step below could not find the image it had just built.
+          load: true
           tags: cip:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -287,7 +293,9 @@ jobs:
           # actioned, and a permanently-red pipeline is a pipeline people learn to ignore.
           ignore-unfixed: true
       - name: Upload scan
-        if: always()
+        # `always()` alone tried to upload a file a failed scan never wrote, which turned one
+        # failure into two and obscured which was the real one.
+        if: always() && hashFiles('trivy.sarif') != ''
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy.sarif
