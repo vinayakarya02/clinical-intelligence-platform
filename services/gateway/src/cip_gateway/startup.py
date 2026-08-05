@@ -21,6 +21,7 @@ checklist that is correct until the day it is not.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from dataclasses import dataclass, field
@@ -57,6 +58,15 @@ _PLACEHOLDERS = ("change-me", "changeme", "replace", "placeholder", "example", "
 _PRODUCTION_SECRETS = (
     ("CIP_ANALYTICS_SALT", "de-identification salt — a known salt makes pseudonyms reversible"),
 )
+
+#: How long one reachability probe may take.
+#:
+#: Matches `cip_gateway.health._CHECK_TIMEOUT_SECONDS`, and for the same reason: the Kubernetes
+#: readinessProbe allows 5 seconds, so a probe that can run longer than that has already lost the
+#: race it exists to win. Without this bound the driver defaults apply — Mongo's server selection
+#: is 5s and Neo4j's connection timeout is 10s — so probing an absent store took 13 seconds and
+#: startup would have blocked well past the point the kubelet gave up.
+_PROBE_TIMEOUT_SECONDS = 3.0
 
 
 class CheckStatus(StrEnum):
@@ -343,8 +353,12 @@ def _check_dependencies(container: ServiceContainer) -> list[StartupCheck]:
     ]
 
 
-def _check_routes(container: ServiceContainer, registry: RouteRegistry) -> list[StartupCheck]:
-    issues = registry.validate(container)
+def _check_routes(
+    container: ServiceContainer,
+    registry: RouteRegistry,
+    adapters: dict[str, frozenset[str]] | None = None,
+) -> list[StartupCheck]:
+    issues = registry.validate(container, adapters=adapters)
     if not issues:
         return [
             StartupCheck(
@@ -395,12 +409,96 @@ def _check_wiring(container: ServiceContainer) -> list[StartupCheck]:
     return checks
 
 
+#: Services whose reachability is probed, and whether the platform may serve without them.
+#: Mirrors the criticality declared in :mod:`cip_gateway.platform`; asserted equal by test, so
+#: the two cannot drift into disagreeing about what "down" means.
+_PROBED_SERVICES: tuple[tuple[str, bool], ...] = (
+    ("postgres", True),
+    ("mongo", True),
+    ("neo4j", False),
+    ("events", True),
+)
+
+
+async def validate_connectivity(container: ServiceContainer) -> tuple[StartupCheck, ...]:
+    """Probe every backing store that was configured, after connecting.
+
+    **Connecting is not reaching.** ``PostgresManager.connect()`` creates an engine and a session
+    factory; SQLAlchemy opens no socket until the first query, so a manager built against an
+    unreachable host connects "successfully" in milliseconds. The same is true of motor and of
+    the Neo4j driver — all three are lazy by design, and that design is correct, because a pool
+    that dials eagerly cannot be constructed before the database is up.
+
+    The consequence is that ``connect()`` returning proves the *configuration* is buildable and
+    nothing about the *server*. Only ``health_check()`` — a real round trip — proves reachability,
+    which is why W0's acceptance criterion says "satisfiable **and** reachable" and why this runs
+    as a separate step rather than being folded into the connect hook.
+
+    Verified during W0 by running the full connect against a machine with no database at all:
+    every store reported connected.
+    """
+    checks: list[StartupCheck] = []
+    for name, critical in _PROBED_SERVICES:
+        service = container.try_get(name)
+        if service is None:
+            checks.append(
+                StartupCheck(
+                    f"reachable.{name}",
+                    CheckStatus.FAILED if critical else CheckStatus.WARNING,
+                    f"{name} is not running, so it cannot be probed",
+                )
+            )
+            continue
+
+        probe = getattr(service, "health_check", None)
+        if probe is None:
+            checks.append(
+                StartupCheck(f"reachable.{name}", CheckStatus.PASSED, "no probe; nothing to open")
+            )
+            continue
+
+        began = time.perf_counter()
+        try:
+            detail = await asyncio.wait_for(probe(), timeout=_PROBE_TIMEOUT_SECONDS)
+        except TimeoutError:
+            checks.append(
+                StartupCheck(
+                    f"reachable.{name}",
+                    CheckStatus.FAILED if critical else CheckStatus.WARNING,
+                    f"{name} did not answer within {_PROBE_TIMEOUT_SECONDS:.0f}s",
+                    "a probe slower than the readiness budget is a probe the kubelet has "
+                    "already given up on",
+                )
+            )
+        except Exception as exc:
+            checks.append(
+                StartupCheck(
+                    f"reachable.{name}",
+                    CheckStatus.FAILED if critical else CheckStatus.WARNING,
+                    f"{name} is unreachable: {type(exc).__name__}: {exc}",
+                    "the process is configured for it and cannot talk to it",
+                )
+            )
+        else:
+            elapsed = (time.perf_counter() - began) * 1000
+            status = str((detail or {}).get("status", "up"))
+            checks.append(
+                StartupCheck(
+                    f"reachable.{name}",
+                    CheckStatus.PASSED if status != "down" else CheckStatus.FAILED,
+                    f"{name} responded in {elapsed:.0f} ms ({status})",
+                )
+            )
+    return tuple(checks)
+
+
 def validate_startup(
     container: ServiceContainer,
     *,
     registry: RouteRegistry | None = None,
     production: bool | None = None,
     start_services: bool = True,
+    adapters: dict[str, frozenset[str]] | None = None,
 ) -> StartupValidation:
     """Run every startup check and report all of them.
 
@@ -424,7 +522,7 @@ def validate_startup(
         environment = "production" if production else "development"
 
     checks.extend(_check_configuration(container, production))
-    checks.extend(_check_routes(container, registry))
+    checks.extend(_check_routes(container, registry, adapters))
     if start_services:
         checks.extend(_check_wiring(container))
 

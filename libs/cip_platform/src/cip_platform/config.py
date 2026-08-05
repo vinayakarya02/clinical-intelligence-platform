@@ -93,10 +93,20 @@ class QueuePolicy:
     """Background work backend and retry behaviour."""
 
     backend: str = "memory"
-    """``memory`` or ``celery``. Memory executes inline, which is right for tests and wrong for
-    anything that must survive a restart."""
+    """``memory`` or ``redis``. Memory executes inline, which is right for tests and wrong for
+    anything that must survive a restart.
+
+    Phase 9 replaced ``celery`` with ``redis`` (ADR-0040). Celery would have required RabbitMQ,
+    a separate worker runtime, and a result backend — three operational systems for three job
+    kinds — while Redis is already required for the cache and, from W5, for cluster-wide rate
+    limiting. This is a change to a configuration value operators set; a deployment carrying
+    ``celery`` is refused at load with a message naming the replacement rather than silently
+    falling back."""
 
     broker_url: str = ""
+    """Redis URL for the durable queue. Named ``broker_url`` rather than ``redis_url`` because
+    it is a different connection from the cache: a saturated job queue must not evict cache
+    entries, and the two are sized and monitored separately."""
     max_retries: int = 3
     retry_backoff_seconds: float = 2.0
     visibility_timeout_seconds: int = 900
@@ -105,7 +115,16 @@ class QueuePolicy:
     same document."""
 
     def __post_init__(self) -> None:
-        if self.backend not in ("memory", "celery"):
+        if self.backend == "celery":
+            # Named explicitly rather than lumped into "unknown backend". An operator whose
+            # deployment carries the old value needs to be told what replaced it, not that
+            # their configuration is unrecognisable.
+            raise ValueError(
+                "queue backend 'celery' was replaced by 'redis' in Phase 9 "
+                "(docs/design/adr-0040-redis-task-queue.md). Set CIP_QUEUE_BACKEND=redis and "
+                "point CIP_BROKER_URL at Redis."
+            )
+        if self.backend not in ("memory", "redis"):
             raise ValueError(f"Unknown queue backend '{self.backend}'")
         if self.max_retries < 0:
             raise ValueError("max_retries must be >= 0")
@@ -167,6 +186,8 @@ class PlatformSettings:
     telemetry: TelemetryPolicy = field(default_factory=TelemetryPolicy)
     limits: LimitsPolicy = field(default_factory=LimitsPolicy)
     events_backend: str = "memory"
+    events_broker_url: str = ""
+    """Kafka bootstrap servers, comma-separated. Empty is valid only for the memory backend."""
     feature_flags: dict[str, bool] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -204,8 +225,10 @@ class PlatformSettings:
             problems.append("metrics disabled: the service would be unobservable")
         if self.cache.backend == "redis" and not self.cache.redis_url:
             problems.append("cache backend is 'redis' but no redis_url is set")
-        if self.queue.backend == "celery" and not self.queue.broker_url:
-            problems.append("queue backend is 'celery' but no broker_url is set")
+        if self.queue.backend == "redis" and not self.queue.broker_url:
+            problems.append("queue backend is 'redis' but no broker_url is set")
+        if self.events_backend == "kafka" and not self.events_broker_url:
+            problems.append("events backend is 'kafka' but no events_broker_url is set")
 
         if problems:
             raise ValueError(
@@ -276,4 +299,5 @@ def load_platform_settings(source: dict[str, str] | None = None) -> PlatformSett
             daily_budget_usd_per_tenant=_float("DAILY_BUDGET_USD", 0.0),
         ),
         events_backend=_get("EVENTS_BACKEND", "memory") or "memory",
+        events_broker_url=_get("EVENTS_BROKER_URL"),
     )

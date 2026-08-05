@@ -88,7 +88,7 @@ class TestConfiguration:
             PlatformSettings(
                 environment=Environment.PRODUCTION,
                 cache=CachePolicy(backend="redis", redis_url="redis://x"),
-                queue=QueuePolicy(backend="celery", broker_url="amqp://x"),
+                queue=QueuePolicy(backend="redis", broker_url="redis://x:6379/1"),
                 events_backend="kafka",
                 telemetry=TelemetryPolicy(record_prompt_content=True),
             )
@@ -98,7 +98,7 @@ class TestConfiguration:
             PlatformSettings(
                 environment=Environment.PRODUCTION,
                 cache=CachePolicy(backend="redis"),
-                queue=QueuePolicy(backend="celery", broker_url="amqp://x"),
+                queue=QueuePolicy(backend="redis", broker_url="redis://x:6379/1"),
                 events_backend="kafka",
             )
 
@@ -106,10 +106,35 @@ class TestConfiguration:
         settings = PlatformSettings(
             environment=Environment.PRODUCTION,
             cache=CachePolicy(backend="redis", redis_url="redis://cache:6379/0"),
-            queue=QueuePolicy(backend="celery", broker_url="amqp://broker"),
+            queue=QueuePolicy(backend="redis", broker_url="redis://broker:6379/1"),
             events_backend="kafka",
+            events_broker_url="kafka-0:9092,kafka-1:9092",
         )
         assert settings.environment.is_deployed
+
+    def test_a_kafka_backend_without_a_broker_is_refused(self) -> None:
+        """The same shape as the redis-without-a-url check, for the event backbone.
+
+        Added in Phase 9 (W0): `events_backend` was validated as a name but nothing checked that
+        a broker had been supplied, so a production deployment could name Kafka and start with
+        nowhere to publish to.
+        """
+        with pytest.raises(ValueError, match="no events_broker_url"):
+            PlatformSettings(
+                environment=Environment.PRODUCTION,
+                cache=CachePolicy(backend="redis", redis_url="redis://cache:6379/0"),
+                queue=QueuePolicy(backend="redis", broker_url="redis://broker:6379/1"),
+                events_backend="kafka",
+            )
+
+    def test_the_replaced_celery_backend_names_its_replacement(self) -> None:
+        """An operator carrying the old value needs to be told what replaced it.
+
+        Phase 9 replaced `celery` with `redis` (ADR-0040). Reporting it as merely "unknown"
+        would leave a deployment stuck on a value that used to be correct.
+        """
+        with pytest.raises(ValueError, match="replaced by 'redis'"):
+            QueuePolicy(backend="celery", broker_url="amqp://x")
 
     def test_the_principal_limit_is_tighter_than_the_tenant_limit(self) -> None:
         """One leaked key must not be able to consume its whole tenant's allowance."""

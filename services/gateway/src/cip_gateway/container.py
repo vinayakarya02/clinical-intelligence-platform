@@ -30,7 +30,7 @@ on the way down, and the resulting error log is about the wrong component.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -39,6 +39,7 @@ from cip_core.errors import CipError
 from cip_core.logging import get_logger
 
 __all__ = [
+    "ConnectionStatus",
     "ContainerError",
     "ServiceContainer",
     "ServiceSpec",
@@ -105,6 +106,22 @@ class ServiceSpec:
     stop: Callable[[Any], None] | None = None
     """Called on shutdown, newest first. Absent for services that hold no resource."""
 
+    connect: Callable[[Any], Awaitable[None]] | None = None
+    """Opened after every service is built, in dependency order.
+
+    Separate from ``factory`` because opening a socket is not the same operation as constructing
+    an object, and conflating them makes the container's synchronous build depend on an event
+    loop. A database manager is *constructed* with settings — which can fail immediately and
+    locally — and *connected* to a server that may be unreachable for reasons that have nothing
+    to do with this process.
+
+    The split also means a unit test can build the whole platform without a database, which is
+    how 1,235 tests keep running in a few seconds.
+    """
+
+    aclose: Callable[[Any], Awaitable[None]] | None = None
+    """Closed in reverse dependency order, before the synchronous ``stop`` hooks."""
+
     def __post_init__(self) -> None:
         if not self.name.strip():
             raise ContainerError("ServiceSpec.name must not be empty")
@@ -132,6 +149,32 @@ class ServiceStatus:
         if self.error:
             payload["error"] = self.error
         return payload
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectionStatus:
+    """The outcome of opening one service's connection."""
+
+    name: str
+    connected: bool
+    duration_ms: float = 0.0
+    error: str = ""
+    critical: bool = True
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "connected": self.connected,
+            "durationMs": round(self.duration_ms, 3),
+            "error": self.error,
+            "critical": self.critical,
+        }
+
+    def render(self) -> str:
+        mark = " " if self.connected else ("!" if self.critical else "~")
+        detail = f"  {self.error}" if self.error else ""
+        state = "connected" if self.connected else "unreachable"
+        return f"  {mark} {self.name:<20} {state:<12} {self.duration_ms:>7.1f} ms{detail}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -303,6 +346,73 @@ class ServiceContainer:
         except ContainerError:
             return None
 
+    async def connect(self) -> tuple[ConnectionStatus, ...]:
+        """Open every connection-holding service, in dependency order.
+
+        Called after :meth:`start` and before the first request. A service whose ``connect``
+        raises is marked DEGRADED — or FAILED if it is critical — using exactly the same rules
+        :meth:`start` applies to a construction failure, so "the database is unreachable" and
+        "the database manager could not be built" produce the same shape of report and the same
+        readiness decision.
+
+        Unlike :meth:`start`, this does **not** abort on the first critical failure. Connection
+        failures are usually environmental and often plural — one unreachable host frequently
+        means several — and an operator reading a crash loop wants every unreachable dependency
+        at once, not one per restart.
+        """
+        if not self._started:
+            raise ContainerError("connect() requires start() first")
+
+        results: list[ConnectionStatus] = []
+        for name in self._order or self.build_order():
+            spec = self._specs[name]
+            instance = self._instances.get(name)
+            if spec.connect is None or instance is None:
+                continue
+            if not self._status[name].state.is_usable:
+                continue
+
+            began = time.perf_counter()
+            try:
+                await spec.connect(instance)
+            except Exception as exc:
+                elapsed = (time.perf_counter() - began) * 1000
+                detail = f"{type(exc).__name__}: {exc}"
+                self._status[name] = ServiceStatus(
+                    name=name,
+                    state=ServiceState.FAILED if spec.critical else ServiceState.DEGRADED,
+                    critical=spec.critical,
+                    error=detail,
+                )
+                results.append(ConnectionStatus(name, False, elapsed, detail, spec.critical))
+                _log.error("container.connect_failed", service=name, error=type(exc).__name__)
+            else:
+                elapsed = (time.perf_counter() - began) * 1000
+                results.append(ConnectionStatus(name, True, elapsed, "", spec.critical))
+                _log.info("container.connected", service=name, duration_ms=round(elapsed, 1))
+        return tuple(results)
+
+    async def aclose(self) -> tuple[str, ...]:
+        """Close every connection, in reverse dependency order.
+
+        Reverse, for the reason :meth:`stop` is reverse: closing a pool while something that
+        borrows from it is still draining produces errors that name the wrong component. A hook
+        that raises is logged and does not prevent the rest closing — a shutdown that aborts
+        halfway leaks whatever it had not reached.
+        """
+        closed: list[str] = []
+        for name in reversed(self._order or self.build_order()):
+            spec = self._specs.get(name)
+            instance = self._instances.get(name)
+            if spec is None or instance is None or spec.aclose is None:
+                continue
+            try:
+                await spec.aclose(instance)
+            except Exception as exc:
+                _log.error("container.aclose_failed", service=name, error=type(exc).__name__)
+            closed.append(name)
+        return tuple(closed)
+
     def start(self) -> StartupReport:
         """Build every service in dependency order.
 
@@ -461,6 +571,8 @@ class ContainerBuilder:
         critical: bool = True,
         description: str = "",
         stop: Callable[[Any], None] | None = None,
+        connect: Callable[[Any], Awaitable[None]] | None = None,
+        aclose: Callable[[Any], Awaitable[None]] | None = None,
     ) -> ContainerBuilder:
         self.specs.append(
             ServiceSpec(
@@ -470,6 +582,8 @@ class ContainerBuilder:
                 critical=critical,
                 description=description,
                 stop=stop,
+                connect=connect,
+                aclose=aclose,
             )
         )
         return self

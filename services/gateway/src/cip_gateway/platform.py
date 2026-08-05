@@ -43,6 +43,12 @@ _log = get_logger(__name__)
 #: one that does.
 SERVICE_NAMES = (
     "settings",
+    "postgres",
+    "mongo",
+    "neo4j",
+    "cache",
+    "queue",
+    "events",
     "gateway",
     "audit",
     "ingestion",
@@ -84,6 +90,69 @@ def _settings(_: ServiceContainer) -> Any:
         "platform": load_platform_settings(),
         "secrets": secrets,
     }
+
+
+# ---------------------------------------------------------------------------------------
+# Backing stores.
+#
+# Constructed here and connected by the container's async lifecycle. Until Phase 9 these were
+# built in `cip_ingestion.api.dependencies` — an entirely separate FastAPI application — so the
+# unified app had the container, the routes, and the startup validation, and the *other* app had
+# the only working database wiring. Neither was deployable.
+#
+# Construction is synchronous and cannot fail on a network: `PostgresManager(settings)` validates
+# a DSN, it does not open a socket. That is what lets the whole platform be built in a unit test
+# with no infrastructure, and why `connect` is a separate hook.
+# ---------------------------------------------------------------------------------------
+
+
+def _postgres(container: ServiceContainer) -> Any:
+    from cip_core.db.postgres import PostgresManager
+
+    return PostgresManager(container.get("settings")["core"].postgres)
+
+
+def _mongo(container: ServiceContainer) -> Any:
+    from cip_core.db.mongo import MongoManager
+
+    return MongoManager(container.get("settings")["core"].mongo)
+
+
+def _neo4j(container: ServiceContainer) -> Any:
+    from cip_core.db.neo4j import Neo4jManager
+
+    return Neo4jManager(container.get("settings")["core"].neo4j)
+
+
+def _cache(container: ServiceContainer) -> Any:
+    from cip_platform.cache.factory import build_cache
+
+    return build_cache(container.get("settings")["platform"].cache)
+
+
+def _queue(container: ServiceContainer) -> Any:
+    from cip_platform.tasks.factory import build_task_queue
+
+    return build_task_queue(container.get("settings")["platform"].queue)
+
+
+def _events(container: ServiceContainer) -> Any:
+    from cip_platform.events.factory import build_event_bus
+
+    return build_event_bus(container.get("settings")["platform"])
+
+
+async def _connect_events(bus: Any) -> None:
+    """Only the Kafka bus opens a connection; the in-memory one has nothing to open."""
+    connect = getattr(bus, "connect", None)
+    if connect is not None:
+        await connect()
+
+
+async def _aclose_events(bus: Any) -> None:
+    aclose = getattr(bus, "aclose", None)
+    if aclose is not None:
+        await aclose()
 
 
 def _audit(_: ServiceContainer) -> Any:
@@ -289,6 +358,64 @@ def platform_specs() -> ContainerBuilder:
     return (
         ContainerBuilder()
         .add("settings", _settings, description="Validated platform configuration")
+        # Backing stores. Criticality is a product decision, stated per store:
+        #
+        # postgres  critical — the operational store. Nothing serves without it.
+        # mongo     critical — parsed document artifacts; retrieval has nothing to return.
+        # neo4j     NOT critical — the graph enriches retrieval and does not gate it. A platform
+        #           that refuses to answer questions because a traversal is unavailable has
+        #           converted a degraded feature into an outage.
+        # cache     NOT critical — a cache outage is latency, and failing closed on it turns a
+        #           slowdown into downtime. RedisCache already fails open per request.
+        # queue     critical — an unavailable queue that accepts work silently loses it, and the
+        #           caller has already been told the document was accepted.
+        # events    critical — clinical events must not vanish; see ADR-0026 on ordering.
+        .add(
+            "postgres",
+            _postgres,
+            depends_on=("settings",),
+            description="Operational store (PostgreSQL)",
+            connect=lambda manager: manager.connect(),
+            aclose=lambda manager: manager.disconnect(),
+        )
+        .add(
+            "mongo",
+            _mongo,
+            depends_on=("settings",),
+            description="Parsed-document artifact store (MongoDB)",
+            connect=lambda manager: manager.connect(),
+            aclose=lambda manager: manager.disconnect(),
+        )
+        .add(
+            "neo4j",
+            _neo4j,
+            depends_on=("settings",),
+            critical=False,
+            description="Clinical knowledge graph store (Neo4j)",
+            connect=lambda manager: manager.connect(),
+            aclose=lambda manager: manager.disconnect(),
+        )
+        .add(
+            "cache",
+            _cache,
+            depends_on=("settings",),
+            critical=False,
+            description="Shared cache (memory or Redis)",
+        )
+        .add(
+            "queue",
+            _queue,
+            depends_on=("settings",),
+            description="Durable background work queue (memory or Redis)",
+        )
+        .add(
+            "events",
+            _events,
+            depends_on=("settings",),
+            description="Event backbone (memory or Kafka)",
+            connect=_connect_events,
+            aclose=_aclose_events,
+        )
         .add("audit", _audit, description="Audit sink shared by disclosure paths")
         .add(
             "ingestion",

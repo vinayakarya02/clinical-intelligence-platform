@@ -234,6 +234,41 @@ genuine production bug rather than a preference:
 
 ---
 
+## 9a. Phase 9 W0 — the two applications became one
+
+Phase 8 integrated the *services* and left the *storage layer* in Phase 1. The composition root
+now registers the backing stores too, so there is one application rather than two:
+
+```
+settings ──▶ postgres  mongo  neo4j  cache  queue  events ──▶ the nine services
+             critical  critical  ~     ~     critical critical
+```
+
+`~` is non-critical: Neo4j enriches retrieval rather than gating it, and a cache outage is
+latency. Failing closed on either converts a degraded feature into an outage.
+
+**Lifecycle gained an async half.** `ServiceSpec` now carries optional `connect` and `aclose`
+hooks, and the container gained `connect()` and `aclose()`. Construction stays synchronous —
+`PostgresManager(settings)` validates a DSN and opens no socket — which is what lets the whole
+platform be built in a unit test with no infrastructure.
+
+**Connecting is not reaching, and this cost a real check.** SQLAlchemy, motor, and the Neo4j
+driver all open lazily by design, so connecting the full platform on a machine with *no
+database at all* reported every store as connected. Only `health_check()` — a real round trip —
+proves reachability, so `validate_connectivity()` runs as a separate step with its own 3-second
+budget, matching the readiness probe's. Without that bound the driver defaults applied and
+probing an absent store took 13 seconds, well past the point the kubelet gives up.
+
+**Every configured backend can now be built.** `RedisCache` existed and was instantiated
+nowhere; Celery and Kafka did not exist at all. There are now factories for all three, Kafka is
+the event backbone, and the task queue is Redis rather than Celery
+([ADR-0040](../design/adr-0040-redis-task-queue.md)).
+
+**No route answers 501.** The Phase 8 registry asked whether a route's *service* was registered
+— `retrieval` was, so four routes validated cleanly while the app answered 501 because no
+handler existed. `validate()` now takes the adapter map and reports `unimplemented`; a route
+that cannot be answered fails startup rather than a client.
+
 ## 10. The lesson, stated plainly
 
 Across Phases 5, 6, 7, and 8 the same pattern held: **the serious defects were found by running

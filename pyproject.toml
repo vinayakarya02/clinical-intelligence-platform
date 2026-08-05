@@ -29,6 +29,12 @@ dependencies = [
     "pillow>=11.0",
     "pytesseract>=0.3.13",
     "pdf2image>=1.17",
+    # Phase 9 (W0). Both are required in a deployed environment — the cache, the durable task
+    # queue, and the event backbone all refuse their in-memory backends in production — so they
+    # are core dependencies rather than extras. An install that cannot build the production
+    # configuration is not a useful install.
+    "redis>=5.2",
+    "aiokafka>=0.12",
 ]
 
 [project.optional-dependencies]

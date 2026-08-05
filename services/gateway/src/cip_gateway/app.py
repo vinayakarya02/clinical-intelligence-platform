@@ -39,13 +39,55 @@ from cip_gateway.container import ServiceContainer
 from cip_gateway.health import HealthService
 from cip_gateway.platform import build_platform
 from cip_gateway.routes import RouteRegistry, RouteSpec, platform_routes
-from cip_gateway.startup import validate_startup
+from cip_gateway.startup import CheckStatus, validate_connectivity, validate_startup
 
 __all__ = ["build_app", "create_app"]
 
 _log = get_logger(__name__)
 
 _PURPOSE_HEADER = "x-purpose-of-use"
+
+#: What this application can actually serve, per service.
+#:
+#: Declared rather than inferred, and cross-checked against the registry at startup. The Phase 8
+#: registry asked only whether a route's *service* was registered — `retrieval` was, so four
+#: routes validated cleanly while the app answered 501 because no handler existed. This map
+#: closes that: a route naming an operation absent from here fails startup validation instead of
+#: failing a client.
+#:
+#: `tests/gateway/test_integration.py` asserts every entry actually responds, so an operation
+#: listed here but not implemented is caught by test rather than by a caller.
+ADAPTERS: dict[str, frozenset[str]] = {
+    "interop": frozenset(
+        {
+            "capability",
+            "read",
+            "search",
+            "write",
+            "everything",
+            "kickoff_export",
+            "export_status",
+            "bulk_import",
+        }
+    ),
+    "analytics": frozenset(
+        {
+            "list_metrics",
+            "get_metric",
+            "list_templates",
+            "list_dashboards",
+            "get_dashboard",
+            "list_reports",
+            "get_report_runs",
+            "health",
+        }
+    ),
+    # `ask` and the ingestion write path answer 503 "not here yet" rather than 501 — the handler
+    # exists and states honestly that the capability arrives with W1. They are listed because
+    # the route *is* answered; what it answers is a deliberate, documented interim.
+    "retrieval": frozenset({"search", "ask"}),
+    "ingestion": frozenset({"upload", "get"}),
+}
 
 
 def _admit(request: Request, spec: RouteSpec, container: ServiceContainer) -> Any:
@@ -264,6 +306,21 @@ def _handler_for(spec: RouteSpec, container: ServiceContainer) -> Callable[..., 
                 return principal
             return _respond(_dispatch_analytics(service["api"], spec, request, principal))
 
+        if spec.service == "retrieval":
+            return await _dispatch_retrieval(service, spec, request)
+
+        if spec.service == "ingestion":
+            # Ingestion's write path needs the database-backed pipeline, not the pure processor
+            # the container holds. Connecting the two is W1. Until then the route answers
+            # honestly — 503 "not here yet", not 501 "does not exist" — because the distinction
+            # is exactly what a client integrating against this surface needs to know.
+            return _problem(
+                503,
+                "not available on this surface yet",
+                f"{spec.key} is served by the ingestion application until its persistence is "
+                f"wired into the unified app (Phase 9 W1)",
+            )
+
         return _problem(501, "not implemented", f"no adapter is bound for service {spec.service!r}")
 
     handle.__name__ = f"{spec.service}_{spec.operation}"
@@ -287,6 +344,73 @@ def _dispatch_interop(engine: Any, spec: RouteSpec, request: Request, api_reques
         case "export_status":
             return api.export_status(params["job_id"], api_request)
     raise NotImplementedError(spec.operation)
+
+
+async def _dispatch_retrieval(service: Any, spec: RouteSpec, request: Request) -> JSONResponse:
+    """Vector search over the tenant's own corpus.
+
+    The tenant comes from the verified principal and is passed to ``VectorQuery``, which is
+    tenant-scoped by construction — there is no way to express a cross-tenant search through this
+    type, which is the property that makes the isolation hold regardless of what the caller sent.
+
+    ``/v1/ask`` is deliberately **not** answered here. It is the grounded-answer route, and
+    answering it means composing retrieval with the copilot; doing that correctly needs the
+    context builder and the citation invariants Phase 3 built, and short-cutting it in an HTTP
+    adapter would put a second, weaker answer path next to the reviewed one.
+    """
+    from cip_retrieval.vectorstore.base import VectorQuery
+
+    principal = getattr(request.state, "principal", None)
+    if principal is None:
+        return _problem(401, "unauthenticated", "a verified credential is required")
+
+    if spec.operation == "ask":
+        return _problem(
+            503,
+            "not available on this surface yet",
+            "grounded answering composes retrieval with the copilot and is wired in Phase 9 W1; "
+            "use /v1/search for retrieval only",
+        )
+
+    body: dict[str, Any] = {}
+    if request.headers.get("content-length"):
+        try:
+            body = await request.json()
+        except Exception:
+            return _problem(400, "invalid body", "expected a JSON object")
+
+    text = str(body.get("query", "")).strip()
+    if not text:
+        return _problem(400, "query required", "supply a non-empty 'query'")
+
+    top_k = int(body.get("top_k", 10))
+    if not 1 <= top_k <= 100:
+        return _problem(400, "invalid top_k", "top_k must be in [1, 100]")
+
+    vector = await service["embeddings"].embed_query(text)
+    matches = await service["vector_store"].search(
+        VectorQuery(
+            values=vector.values,
+            tenant_id=principal.tenant_id,
+            model_key=vector.model.key,
+            top_k=top_k,
+        )
+    )
+    return JSONResponse(
+        status_code=200,
+        content={
+            "query": text,
+            "model": vector.model.key,
+            "matches": [
+                {
+                    "chunk_id": str(match.record.chunk_id),
+                    "document_id": str(match.record.document_id),
+                    "score": round(match.score, 6),
+                }
+                for match in matches
+            ],
+        },
+    )
 
 
 def _dispatch_analytics(api: Any, spec: RouteSpec, request: Request, principal: Any) -> Any:
@@ -335,15 +459,37 @@ def build_app(
     registry = registry if registry is not None else platform_routes()
 
     if validate:
-        validate_startup(container, registry=registry).raise_for_status()
+        validate_startup(container, registry=registry, adapters=ADAPTERS).raise_for_status()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        # Three phases, in this order, and the order is the point:
+        #   build (sync, already done)  →  connect (opens pools)  →  probe (proves reachability)
+        # Connecting is not reaching — see validate_connectivity — so a platform that skipped the
+        # probe would report itself ready while unable to answer a single query.
+        opened = await container.connect()
+        for status in opened:
+            if not status.connected:
+                _log.error("app.connect_failed", service=status.name, error=status.error)
+
+        reachability = await validate_connectivity(container)
+        unreachable = [c for c in reachability if c.status is CheckStatus.FAILED]
+        if unreachable and validate:
+            for check in unreachable:
+                _log.error("app.unreachable", detail=check.detail)
+            await container.aclose()
+            raise RuntimeError(
+                "refusing to serve: " + "; ".join(check.detail for check in unreachable)
+            )
+        for check in reachability:
+            _log.info("app.reachability", check=check.name, status=str(check.status))
+
         try:
             yield
         finally:
-            # Reverse dependency order, so a service is never torn down while something that
-            # depends on it is still draining.
+            # Async closes first, then the synchronous stop hooks — both in reverse dependency
+            # order, so a pool is never closed while something borrowing from it is draining.
+            await container.aclose()
             stopped = container.stop()
             _log.info("app.stopped", services=len(stopped))
 
@@ -363,8 +509,9 @@ def build_app(
     # and re-sorting here would reintroduce exactly the bug that check exists to prevent.
     mounted = 0
     for spec in registry.routes:
-        if spec.service not in ("interop", "analytics"):
-            continue  # ingestion and retrieval keep their own routers
+        if spec.path.startswith("/health"):
+            # The probes belong to the health surface, not to a service adapter.
+            continue
         app.add_api_route(
             spec.path,
             _handler_for(spec, container),

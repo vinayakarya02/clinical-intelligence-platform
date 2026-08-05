@@ -806,7 +806,7 @@ def test_every_declared_wheel_package_is_tracked() -> None:
     assert not missing, f"declared for the wheel but not tracked by git: {missing}"
 
 
-def test_ci_environment_variables_are_actually_read() -> None:
+def test_environment_variables_are_actually_read() -> None:
     """Every ``CIP_*`` variable the CI workflow sets must change the settings it loads.
 
     The workflow set ``CIP_POSTGRES_DSN``, ``CIP_NEO4J_URI``, ``CIP_NEO4J_USER``, and
@@ -832,13 +832,31 @@ def test_ci_environment_variables_are_actually_read() -> None:
     import subprocess
     import sys
 
-    workflow = (REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    # Assignments only — a name inside a comment is prose, not configuration.
-    assigned = sorted(set(re.findall(r"^\s+(CIP_[A-Z0-9_]+):", workflow, re.M)))
-    assert assigned, "no CIP_* assignments found; has the workflow moved?"
+    # Both files, because the same defect lived in both: the compose stack also set
+    # CIP_POSTGRES_DSN, CIP_MONGO_URI, and CIP_NEO4J_URI, so `make services-up` brought up a
+    # stack that appeared fully configured and ran entirely on defaults.
+    sources = [".github/workflows/ci.yml", "docker/docker-compose.yml"]
+    assigned: set[str] = set()
+    for relative in sources:
+        text = (REPO / relative).read_text(encoding="utf-8")
+        # Assignments only — a name inside a comment is prose, not configuration.
+        assigned |= set(re.findall(r"^\s+(CIP_[A-Z0-9_]+):", text, re.M))
+    assert assigned, f"no CIP_* assignments found across {sources}"
 
     #: Read by the test harness or by cip_platform rather than by a cip_core model.
-    exempt = {"CIP_RUN_INTEGRATION", "CIP_REDIS_URL", "CIP_BROKER_URL", "CIP_ANALYTICS_SALT"}
+    exempt = {
+        "CIP_RUN_INTEGRATION",
+        # Read by cip_platform rather than by a cip_core pydantic model.
+        "CIP_REDIS_URL",
+        "CIP_BROKER_URL",
+        "CIP_ANALYTICS_SALT",
+        "CIP_CACHE_BACKEND",
+        "CIP_QUEUE_BACKEND",
+        "CIP_EVENTS_BACKEND",
+        "CIP_EVENTS_BROKER_URL",
+        "CIP_OTLP_ENDPOINT",
+        "CIP_ENVIRONMENT",
+    }
 
     probe = """
 import json
@@ -893,8 +911,8 @@ print(json.dumps(d, sort_keys=True))
             return True
         return result.stdout != baseline
 
-    ignored = [name for name in assigned if name not in exempt and not is_read(name)]
+    ignored = [name for name in sorted(assigned) if name not in exempt and not is_read(name)]
     assert not ignored, (
-        "the CI workflow sets these variables and they change nothing, so they are read by "
-        f"nothing: {ignored}"
+        "these variables are set by CI or by the compose stack and change nothing, so they "
+        f"are read by nothing: {ignored}"
     )

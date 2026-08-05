@@ -8,18 +8,31 @@
 
 name: cip
 
+# Every name here is read by a settings field. Four of them previously were not:
+# CIP_POSTGRES_DSN, CIP_MONGO_URI, CIP_NEO4J_URI, and CIP_NEO4J_USER used a single underscore,
+# but the nested models require a double one — and there is no `dsn` field at all, since
+# PostgresSettings.dsn() *builds* the URL from these parts. The stack therefore ran on defaults
+# while appearing fully configured. This is the same defect the CI workflow carried, found the
+# same way; `test_environment_variables_are_actually_read` now covers both files.
 x-app-env: &app-env
   CIP_ENVIRONMENT: development
   CIP_CACHE_BACKEND: redis
   CIP_REDIS_URL: redis://redis:6379/0
-  CIP_QUEUE_BACKEND: celery
-  CIP_BROKER_URL: amqp://cip:devpassword@rabbitmq:5672//
-  CIP_EVENTS_BACKEND: memory
-  CIP_POSTGRES_DSN: postgresql+asyncpg://cip:devpassword@postgres:5432/cip
-  CIP_MONGO_URI: mongodb://cip:devpassword@mongo:27017/cip?authSource=admin
-  CIP_NEO4J_URI: bolt://neo4j:7687
-  CIP_NEO4J_USER: neo4j
-  CIP_NEO4J_PASSWORD: devpassword
+  # Redis, not Celery — docs/design/adr-0040-redis-task-queue.md. Database 1, so a saturated
+  # job queue cannot evict cache entries in database 0.
+  CIP_QUEUE_BACKEND: redis
+  CIP_BROKER_URL: redis://redis:6379/1
+  CIP_EVENTS_BACKEND: kafka
+  CIP_EVENTS_BROKER_URL: kafka:9092
+  CIP_POSTGRES__HOST: postgres
+  CIP_POSTGRES__PORT: "5432"
+  CIP_POSTGRES__DATABASE: cip
+  CIP_POSTGRES__USER: cip
+  CIP_POSTGRES__PASSWORD: devpassword
+  CIP_MONGO__URI: mongodb://cip:devpassword@mongo:27017/cip?authSource=admin
+  CIP_NEO4J__URI: bolt://neo4j:7687
+  CIP_NEO4J__USER: neo4j
+  CIP_NEO4J__PASSWORD: devpassword
   CIP_OTLP_ENDPOINT: http://otel-collector:4317
 
 services:
@@ -36,6 +49,7 @@ services:
       redis: { condition: service_healthy }
       mongo: { condition: service_healthy }
       neo4j: { condition: service_healthy }
+      kafka: { condition: service_healthy }
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health/live"]
       interval: 15s
@@ -49,7 +63,8 @@ services:
     command: ["worker"]
     environment: *app-env
     depends_on:
-      rabbitmq: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+      redis: { condition: service_healthy }
       postgres: { condition: service_healthy }
     # Two replicas locally so idempotency and duplicate delivery are exercised in development
     # rather than discovered in staging.
@@ -63,7 +78,7 @@ services:
     command: ["scheduler"]
     environment: *app-env
     depends_on:
-      rabbitmq: { condition: service_healthy }
+      redis: { condition: service_healthy }
     # Exactly one. Two schedulers enqueue every periodic job twice (ADR-0017).
     deploy:
       replicas: 1
@@ -122,18 +137,31 @@ services:
       timeout: 3s
       retries: 5
 
-  rabbitmq:
-    image: rabbitmq:3-management-alpine
+  # Kafka in KRaft mode — no ZooKeeper. One broker is right for local development and wrong
+  # for production, where ADR-0026's per-tenant ordering needs partitions across brokers.
+  kafka:
+    image: bitnami/kafka:3.9.0
     environment:
-      RABBITMQ_DEFAULT_USER: cip
-      RABBITMQ_DEFAULT_PASS: devpassword
+      KAFKA_CFG_NODE_ID: "0"
+      KAFKA_CFG_PROCESS_ROLES: controller,broker
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 0@kafka:9093
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # A single broker cannot replicate, so the offsets topic must not ask for more.
+      KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
     ports:
-      - "15672:15672"
+      - "9092:9092"
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
       interval: 15s
       timeout: 10s
-      retries: 5
+      retries: 10
+      start_period: 30s
 
   # Pinned like every other image here. A dashboard stack that silently changes version
   # underneath you produces "the graph broke and nobody changed anything".

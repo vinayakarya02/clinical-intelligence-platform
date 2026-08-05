@@ -33,8 +33,11 @@ data:
   CIP_STORAGE__S3_BUCKET: "cip-documents"
   CIP_STORAGE__S3_REGION: "us-east-1"
   CIP_CACHE_BACKEND: "redis"
-  CIP_QUEUE_BACKEND: "celery"
+  # Redis, not Celery: see docs/design/adr-0040-redis-task-queue.md.
+  CIP_QUEUE_BACKEND: "redis"
   CIP_EVENTS_BACKEND: "kafka"
+  # Bootstrap servers. Validated at load: naming Kafka without a broker is refused.
+  CIP_EVENTS_BROKER_URL: "kafka-0.kafka:9092,kafka-1.kafka:9092"
   CIP_METRICS_ENABLED: "true"
   CIP_TRACING_ENABLED: "true"
   # Sampled, not exhaustive: head sampling at 10% keeps the trace backend affordable at

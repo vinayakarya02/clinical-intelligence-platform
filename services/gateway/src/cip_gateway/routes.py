@@ -62,6 +62,16 @@ class HttpMethod(StrEnum):
 #: reported — which is how two phases of unreachable API were found.
 INTERNAL_SERVICES: dict[str, str] = {
     "settings": "configuration, consumed by every other service",
+    # Backing stores. Infrastructure the services stand on, never a surface a client addresses:
+    # a route that let a caller reach the database directly would bypass every consent, tenant,
+    # and disclosure control the services above it exist to enforce. Their liveness is reported
+    # through the health probes, which is the right place for it.
+    "postgres": "operational store; reached through repositories, never directly",
+    "mongo": "artifact store; reached through repositories, never directly",
+    "neo4j": "graph store; reached through the knowledge-graph service",
+    "cache": "read-through cache applied inside services, not addressable",
+    "queue": "background work is enqueued by services; there is no client-facing queue API",
+    "events": "the event backbone is published to, not requested",
     "gateway": (
         "authentication, rate limiting, and budget — applied to every route rather than "
         "exposed as one"
@@ -121,6 +131,7 @@ class RouteSpec:
 
 class IssueKind(StrEnum):
     DUPLICATE = "duplicate"
+    UNIMPLEMENTED = "unimplemented"
     SHADOWED = "shadowed"
     DEAD = "dead"
     UNREACHABLE = "unreachable"
@@ -163,8 +174,19 @@ class RouteRegistry:
     def services(self) -> frozenset[str]:
         return frozenset(route.service for route in self._routes)
 
-    def validate(self, container: ServiceContainer | None = None) -> tuple[RouteIssue, ...]:
-        """Every disagreement between the routes and the services."""
+    def validate(
+        self,
+        container: ServiceContainer | None = None,
+        adapters: dict[str, frozenset[str]] | None = None,
+    ) -> tuple[RouteIssue, ...]:
+        """Every disagreement between the routes, the services, and the handlers.
+
+        ``adapters`` maps a service name to the operations it can actually serve over HTTP.
+        Without it, this check asks only whether the backing *service is registered* — and that
+        was a real hole: ``retrieval`` was registered, so four routes declaring it passed
+        validation while the application answered 501, because no handler existed. A service
+        being alive is not the same claim as a route being answerable.
+        """
         issues: list[RouteIssue] = []
 
         by_shape: dict[str, list[RouteSpec]] = defaultdict(list)
@@ -210,6 +232,20 @@ class RouteRegistry:
                     f"service {service!r} is routed but not registered — {routes} would 500",
                 )
             )
+
+        if adapters is not None:
+            for route in self._routes:
+                if route.path.startswith("/health"):
+                    continue  # served by the health surface, not by a service adapter
+                implemented = adapters.get(route.service, frozenset())
+                if route.operation not in implemented:
+                    issues.append(
+                        RouteIssue(
+                            IssueKind.UNIMPLEMENTED,
+                            f"{route.key} declares {route.service}.{route.operation} and no "
+                            f"handler implements it; the route would answer 501",
+                        )
+                    )
 
         routed = self.services()
         for service in sorted(registered - routed - frozenset(INTERNAL_SERVICES)):
