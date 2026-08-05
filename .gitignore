@@ -23,10 +23,21 @@ htmlcov/
 *.pem
 *.key
 
-# Local object-storage backend (raw documents may contain PHI — must never be committed)
-var/
-storage/
-uploads/
+# Local object-storage backend (raw documents may contain PHI — must never be committed).
+#
+# Anchored with a leading slash so they match only these directories at the repository root.
+# Unanchored, `storage/` matches *any* directory of that name at any depth — and it did:
+# it silently excluded `libs/cip_core/src/cip_core/storage/`, the object-storage abstraction
+# itself, from every commit for eight phases. The code ran locally, the tests passed locally,
+# and CI could not import it because it had never been pushed. A data-directory rule that also
+# matches a source package is indistinguishable from one that works until something outside
+# this machine tries to build the repository.
+#
+# `tests/gateway/test_integration.py::test_no_source_file_is_git_ignored` fails the build if a
+# rule ever swallows source again.
+/var/
+/storage/
+/uploads/
 
 # Editors / OS
 .idea/

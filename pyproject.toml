@@ -38,7 +38,10 @@ dev = [
     "pytest-asyncio>=0.24",
     "pytest-cov>=6.0",
     "httpx>=0.28",
-    "ruff>=0.8",
+    # Pinned exactly, not floored. A linter is a gate, and a gate whose version floats
+    # gives different verdicts locally and in CI — which it did: `ruff check` passed on the
+    # developer machine and failed the build on six untouched files. Bump deliberately.
+    "ruff==0.16.1",
     "mypy>=1.13",
     "reportlab>=4.2",
 ]
@@ -106,6 +109,26 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RET", "ARG", "PTH", 
 ignore = [
     "B008",   # FastAPI Depends() in defaults is the framework's documented idiom
     "RUF012", # ClassVar annotations on Pydantic/SQLAlchemy declarative attrs are noise here
+]
+
+# First-party packages, declared rather than inferred.
+#
+# Without this, ruff derives first-party membership from `src` above, and that derivation is
+# not stable across ruff releases: CI resolved a newer ruff than the pinned local one and
+# sorted the same imports differently, so `ruff check` passed locally and failed in CI on six
+# files nobody had touched. Naming the packages makes the sort a property of the repository
+# instead of a property of whichever ruff happened to be installed.
+[tool.ruff.lint.isort]
+known-first-party = [
+    "cip_core",
+    "cip_platform",
+    "cip_ingestion",
+    "cip_retrieval",
+    "cip_copilot",
+    "cip_decision",
+    "cip_interop",
+    "cip_analytics",
+    "cip_gateway",
 ]
 
 [tool.ruff.lint.per-file-ignores]

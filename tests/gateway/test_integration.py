@@ -718,3 +718,89 @@ class TestTheAdapterTrustsOnlyTheCredential:
             },
         )
         assert response.status_code == 403, response.text[:300]
+
+
+# ---------------------------------------------------------------------------------------
+# The repository must contain the repository
+# ---------------------------------------------------------------------------------------
+
+
+def test_no_source_file_is_git_ignored() -> None:
+    """A `.gitignore` rule must never exclude source.
+
+    `.gitignore` carried `storage/` — unanchored, and therefore matching *any* directory of
+    that name at any depth. It was written to keep the local object-storage backend out of the
+    repository, because raw documents there may contain PHI. It also silently excluded
+    `libs/cip_core/src/cip_core/storage/` — the object-storage abstraction itself — from every
+    commit for eight phases.
+
+    Nothing local could detect it. The code was on disk, the imports resolved, and 1,232 tests
+    passed. The first machine that did not already have the files was CI, which failed twice
+    over: the test job could not import `cip_core.storage`, and the lint job reported unsorted
+    imports in exactly the six files that import it, because ruff could not resolve the package
+    as first-party when it was not in the checkout. Two symptoms, one absent directory.
+
+    This is the same class as the Phase 8 Dockerfile finding — an artefact that ships a subset
+    of the repository and reports success — and it is checked the same way: derive the expected
+    set from the tree rather than from a list somebody maintains.
+    """
+    import subprocess
+
+    result = subprocess.run(
+        [
+            "git",
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "libs/",
+            "services/",
+            "tests/",
+            "migrations/",
+        ],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:  # not a git checkout (a source tarball, a vendored copy)
+        pytest.skip("not a git working tree")
+
+    ignored_source = [
+        line
+        for line in result.stdout.splitlines()
+        if line.endswith(".py") and "__pycache__" not in line
+    ]
+    assert not ignored_source, (
+        "these source files exist on disk and are excluded from the repository by a "
+        ".gitignore rule; run `git check-ignore -v <path>` to find the rule:\n  "
+        + "\n  ".join(ignored_source)
+    )
+
+
+def test_every_declared_wheel_package_is_tracked() -> None:
+    """The packaging manifest and the repository must agree.
+
+    A package listed for the wheel but absent from git produces an artefact that builds from a
+    developer's working tree and cannot be built by anyone else — the failure above, seen from
+    the packaging side rather than the import side.
+    """
+    import subprocess
+    import tomllib
+
+    manifest = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
+    declared = manifest["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"]
+
+    result = subprocess.run(
+        ["git", "ls-files"], cwd=REPO, capture_output=True, text=True, check=False
+    )
+    if result.returncode != 0:
+        pytest.skip("not a git working tree")
+    tracked = set(result.stdout.splitlines())
+
+    missing = [
+        package
+        for package in declared
+        if not any(path.startswith(f"{package}/") for path in tracked)
+    ]
+    assert not missing, f"declared for the wheel but not tracked by git: {missing}"
