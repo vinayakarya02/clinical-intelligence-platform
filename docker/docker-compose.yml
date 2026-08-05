@@ -135,8 +135,10 @@ services:
       timeout: 10s
       retries: 5
 
+  # Pinned like every other image here. A dashboard stack that silently changes version
+  # underneath you produces "the graph broke and nobody changed anything".
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v2.53.0
     volumes:
       - ../observability/prometheus:/etc/prometheus:ro
     command:
@@ -144,9 +146,14 @@ services:
       - "--storage.tsdb.retention.time=7d"
     ports:
       - "9090:9090"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:11.1.0
     environment:
       GF_SECURITY_ADMIN_PASSWORD: devpassword
       GF_AUTH_ANONYMOUS_ENABLED: "true"
@@ -154,8 +161,14 @@ services:
       - ../observability/grafana:/etc/grafana/provisioning/dashboards:ro
     ports:
       - "3000:3000"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_healthy
 
 volumes:
   postgres-data:

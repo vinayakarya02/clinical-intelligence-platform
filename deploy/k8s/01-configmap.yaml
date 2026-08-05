@@ -7,6 +7,31 @@ metadata:
 data:
   CIP_ENVIRONMENT: "production"
   CIP_SERVICE_NAME: "clinical-intelligence-platform"
+
+  # ---------------------------------------------------------------------------------------
+  # cip_core settings.
+  #
+  # Two settings systems read this ConfigMap: cip_platform (cache, queue, telemetry, limits)
+  # and cip_core (database, auth, storage, logging). Only the first was configured here, so
+  # cip_core's deployed-environment safety validation rejected the configuration and the pod
+  # could not start — a failure invisible to every per-service test, because no test sets
+  # CIP_ENVIRONMENT. Each key below corresponds to one clause of that validation.
+  # ---------------------------------------------------------------------------------------
+  # Structured logs only: console format loses the fields the audit trail is queried by.
+  CIP_LOG_FORMAT: "json"
+  CIP_DEBUG: "false"
+  # Certificate *and* hostname verified. 'require' encrypts without authenticating the server,
+  # which stops a passive listener and not an active one.
+  CIP_POSTGRES__SSL_MODE: "verify-full"
+  # Deployed environments federate with the tenant IdP; local_hs256 is a development shortcut
+  # that would make this cluster its own identity provider.
+  CIP_AUTH__ENABLED: "true"
+  CIP_AUTH__MODE: "oidc"
+  CIP_AUTH__JWKS_URL: "https://idp.example.org/.well-known/jwks.json"
+  # Durable object storage: a pod's filesystem is read-only and disappears on reschedule.
+  CIP_STORAGE__BACKEND: "s3"
+  CIP_STORAGE__S3_BUCKET: "cip-documents"
+  CIP_STORAGE__S3_REGION: "us-east-1"
   CIP_CACHE_BACKEND: "redis"
   CIP_QUEUE_BACKEND: "celery"
   CIP_EVENTS_BACKEND: "kafka"

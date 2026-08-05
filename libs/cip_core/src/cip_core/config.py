@@ -50,6 +50,28 @@ class Environment(StrEnum):
     STAGING = "staging"
     PROD = "prod"
 
+    @classmethod
+    def _missing_(cls, value: object) -> Environment | None:
+        """Accept the long spellings as well as the short ones.
+
+        ``cip_core`` and ``cip_platform`` both read ``CIP_ENVIRONMENT`` and were written with
+        different vocabularies — ``prod`` here, ``production`` there. Every deployment asset in
+        the repository sets the long form, so the image, the compose stack, and the ConfigMap
+        all set a value this enum rejected, and every containerised start failed at settings
+        load. Nothing caught it because tests never set the variable.
+
+        Both spellings are accepted rather than one being renamed: operators, runbooks, and
+        existing manifests use either, and a config layer that rejects ``production`` for being
+        spelled out adds no safety.
+        """
+        if not isinstance(value, str):
+            return None
+        return {
+            "production": cls.PROD,
+            "development": cls.DEV,
+            "testing": cls.TEST,
+        }.get(value.strip().lower())
+
     @property
     def is_deployed(self) -> bool:
         """True for environments that can hold real tenant data."""

@@ -39,6 +39,18 @@ class Environment(StrEnum):
     STAGING = "staging"
     PRODUCTION = "production"
 
+    @classmethod
+    def _missing_(cls, value: object) -> Environment | None:
+        """Accept ``cip_core``'s short spellings — see that enum for why both exist."""
+        if not isinstance(value, str):
+            return None
+        return {
+            "prod": cls.PRODUCTION,
+            "dev": cls.DEVELOPMENT,
+            "local": cls.DEVELOPMENT,
+            "test": cls.TESTING,
+        }.get(value.strip().lower())
+
     @property
     def is_deployed(self) -> bool:
         """Whether this environment serves anything a user could depend on."""

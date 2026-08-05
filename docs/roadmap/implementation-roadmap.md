@@ -425,7 +425,38 @@ Implemented, tested, and benchmarked; see
 - Cell suppression does not defend against differencing across many correlated queries, and
   differential privacy is not claimed.
 
-## Phase 8 — Enterprise Hardening & Compliance Certification
+## Phase 8 — Enterprise System Integration (delivered)
+
+Not the compliance work planned below, which remains outstanding. Assembling the nine services
+built in Phases 1–7 into one running process turned out to be a prerequisite for any of it: an
+auditor asks to see the system, and until this phase there was no artefact that started every
+service together.
+
+- Composition root and dependency-injection container: topological ordering, cycle detection,
+  per-service criticality, reverse-order shutdown ([ADR-0037](../design/adr-0037-composition-root.md))
+- Ten-stage end-to-end workflow, one correlation id from upload to recorded analytics fact
+- Declared route registry validated against the running services; Phase 6's nine FHIR operations
+  and Phase 7's eight analytics operations mounted for the first time
+  ([ADR-0038](../design/adr-0038-declared-route-registry.md))
+- Four-part startup validation with fail-fast; configuration treated as one contract across code
+  and deployment assets ([ADR-0039](../design/adr-0039-configuration-is-one-contract.md))
+- Static validation of the Dockerfile, compose file, nine Kubernetes manifests, and CI workflow
+
+**What it cost to skip:** five deployment blockers reached this phase undetected, including an
+image that shipped six of nine packages and two settings systems that disagreed about the word
+"production". Details in the
+[Phase 8 engineering report](../design/phase-8-engineering-report.md).
+
+**Exit criteria met:** the platform starts under its own committed manifests, serves its declared
+HTTP surface with authorisation enforced end to end, and refuses to start on a configuration that
+would be unsafe in production.
+
+**Still required before a real deployment**, and listed rather than assumed: `docker build`,
+`kubectl apply --dry-run` against a cluster, image vulnerability scanning, and cluster-wide rate
+limiting — the current limiter is in-process, so the configured per-tenant limit is enforced
+independently by each replica.
+
+## Phase 8 (continued) — Enterprise Hardening & Compliance Certification
 
 - HITRUST CSF and SOC 2 Type II audits (assessor engaged; cadence and scope tracked alongside the
   Phase 1 third-party security review, not as a newly-introduced process)

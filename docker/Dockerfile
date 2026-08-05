@@ -27,12 +27,21 @@ WORKDIR /build
 
 # Dependency manifests first, so a source-only change reuses the dependency layer. This is the
 # difference between a 20-second rebuild and a 4-minute one on every commit.
+#
+# Every package under libs/ and services/ must appear here. An image missing one builds,
+# starts, and passes its health check while being unable to import a third of the platform —
+# a failure no Dockerfile linter detects, because the Dockerfile is valid. The deployment
+# validator (cip_gateway.deployment) derives this list from the repository and fails the build
+# when the two disagree, which is how three phases' worth of drift was found.
 COPY pyproject.toml README.md ./
 COPY libs/cip_core/src ./libs/cip_core/src
 COPY libs/cip_platform/src ./libs/cip_platform/src
 COPY services/ingestion/src ./services/ingestion/src
 COPY services/retrieval/src ./services/retrieval/src
 COPY services/copilot/src ./services/copilot/src
+COPY services/decision/src ./services/decision/src
+COPY services/interop/src ./services/interop/src
+COPY services/analytics/src ./services/analytics/src
 COPY services/gateway/src ./services/gateway/src
 
 RUN python -m venv /opt/venv \

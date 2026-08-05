@@ -9,7 +9,7 @@ This is not a chatbot demo and not a simple single-store RAG pipeline. It is des
 multi-tenant system with defense-in-depth data isolation, HIPAA-aligned compliance controls, and
 provenance/citation on every generated answer — see [docs/architecture/06-security-compliance.md](docs/architecture/06-security-compliance.md).
 
-## Status: Phase 7 — Analytics warehouse & self-service reporting implemented
+## Status: Phase 8 — Nine services integrated into one running platform
 
 Phase 0 (architecture and design) is complete and was put through an adversarial,
 principal-engineer-level production design review — 4 independent reviewers, 74 findings, all
@@ -103,6 +103,23 @@ delivery, and the `/analytics/*` API. Start at
 the four defects the end-to-end run and adversarial pass found, and an honest readiness
 assessment.
 
+**Phase 8 integrated the whole platform**: a composition root that constructs all nine services
+with declared dependencies and per-service criticality, a ten-stage end-to-end workflow carrying
+one correlation id from document upload to a recorded analytics fact, a declared route registry
+validated against the running services, four-part startup validation that fails fast, and static
+validation of every deployment asset. No new capability was added.
+
+It also found what seven phases of green suites had missed. The container caught eight interface
+assumptions that had drifted between services. The deployment validator caught an image shipping
+six of nine packages — one that builds, starts, passes its health check, and cannot import a third
+of the platform. Two settings systems turned out to disagree about the word "production" while
+every deployment asset used the long form, so every containerised start failed at settings load.
+Secrets were mounted where nothing read them. And Phase 6's nine FHIR operations and Phase 7's
+eight analytics operations, both fully implemented and tested, were mounted nowhere at all —
+from an operator's position, dead code. All are fixed and mounted; the
+[Phase 8 engineering report](docs/design/phase-8-engineering-report.md) records each one, including
+two privilege escalations found by adversarial review of Phase 8's own code.
+
 The **web UI** is not implemented, and the analytics loaders are not yet wired to the Phase 1–6
 stores — the warehouse contract is exercised against generated extracts, and `health()` reports
 `503 warehouse-empty` rather than answering every question with zero. Four substitutions are outstanding
@@ -161,11 +178,13 @@ Full rationale: [ADR-0001](docs/design/adr-0001-hybrid-graph-vector-retrieval.md
 | **Phase 5 engineering report** (benchmarks, bugs, readiness) | [docs/design/phase-5-engineering-report.md](docs/design/phase-5-engineering-report.md) |
 | **Phase 6 engineering report** (benchmarks, bugs, readiness) | [docs/design/phase-6-engineering-report.md](docs/design/phase-6-engineering-report.md) |
 | **Phase 7 engineering report** (benchmarks, bugs, readiness) | [docs/design/phase-7-engineering-report.md](docs/design/phase-7-engineering-report.md) |
+| **Phase 8 engineering report** (integration defects, readiness) | [docs/design/phase-8-engineering-report.md](docs/design/phase-8-engineering-report.md) |
 | System architecture (context/container diagrams, service inventory) | [docs/architecture/01-system-architecture.md](docs/architecture/01-system-architecture.md) |
 | RAG & hybrid retrieval design | [docs/architecture/02-rag-hybrid-retrieval.md](docs/architecture/02-rag-hybrid-retrieval.md) |
 | Knowledge graph design | [docs/architecture/03-knowledge-graph.md](docs/architecture/03-knowledge-graph.md) |
 | Conversational AI design | [docs/architecture/04-conversational-ai.md](docs/architecture/04-conversational-ai.md) |
 | Analytics & dashboard design | [docs/architecture/05-analytics-dashboard.md](docs/architecture/05-analytics-dashboard.md) |
+| **System integration** (composition root, pipeline, route registry) | [docs/architecture/12-system-integration.md](docs/architecture/12-system-integration.md) |
 | Security, multi-tenancy & HIPAA compliance | [docs/architecture/06-security-compliance.md](docs/architecture/06-security-compliance.md) |
 | Architecture Decision Records | [docs/design/](docs/design/) |
 | PostgreSQL schema (DDL) | [docs/database/postgres-schema.sql](docs/database/postgres-schema.sql) |
