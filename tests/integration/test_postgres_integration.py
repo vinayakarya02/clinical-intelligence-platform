@@ -100,6 +100,13 @@ class TestRowLevelSecurity:
         async with pg_engine.begin() as connection:
             await connection.execute(text("ALTER TABLE documents ENABLE ROW LEVEL SECURITY"))
             await connection.execute(text("ALTER TABLE documents FORCE ROW LEVEL SECURITY"))
+            # Migration 0001 already creates this policy, and CI now runs the migrations before
+            # the suite. The fixture was written against a bare schema built by
+            # `Base.metadata.create_all`, so it collided with "policy already exists" — which
+            # went unnoticed while the whole suite was skipping.
+            await connection.execute(
+                text("DROP POLICY IF EXISTS tenant_isolation_documents ON documents")
+            )
             await connection.execute(
                 text(
                     "CREATE POLICY tenant_isolation_documents ON documents "
