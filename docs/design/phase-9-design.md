@@ -243,7 +243,7 @@ the job printed "10 skipped" and exited 0. The RLS tests also created their own 
 asserting on it, so even a run that did execute tested a policy the test had just written rather
 than the migration's.
 
-CI now starts all five services and runs 55 tests against them, with a tenant-isolation test per
+CI now starts all five services and runs 56 tests against them, with a tenant-isolation test per
 backend. A skip means the infrastructure is absent and nothing else; any skip naming an
 unreachable service fails the run. See
 [docs/testing/integration-testing.md](../testing/integration-testing.md).

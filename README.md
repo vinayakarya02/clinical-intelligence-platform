@@ -130,7 +130,7 @@ a deterministic extractive composer.
 **The fourth substitution is now partly retired.** Until Phase 9 W6 nothing had run against real
 infrastructure, and the integration suite that was supposed to prove otherwise had never
 executed — green and inert since Phase 1. CI now starts PostgreSQL, Redis, MongoDB, Neo4j, and
-Kafka and runs 55 tests against them, and a run that reaches none of them fails rather than
+Kafka and runs 56 tests against them, and a run that reaches none of them fails rather than
 passing quietly. What is still unproven is stated in
 [docs/testing/integration-testing.md](docs/testing/integration-testing.md): managed services,
 Atlas vector search, multi-broker Kafka, Neo4j clustering, Kubernetes, and sustained load. The

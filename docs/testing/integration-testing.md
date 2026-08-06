@@ -58,7 +58,7 @@ the guard noticing that whole service — a regression that makes the suite *qui
 
 **A run that reached nothing fails.** Two guards in `tests/conftest.py`:
 
-- `--integration-min=N` fails a run in which fewer than N tests executed.
+- `--integration-min=N` fails a run in which fewer than N tests executed (54, against 56).
 - With `CIP_RUN_INTEGRATION=1`, **any** skip naming an unreachable backing service fails the run
   outright. The floor alone degrades as the suite grows — add twenty tests and a floor of fifteen
   is satisfied while five services sit unreached.
@@ -67,6 +67,22 @@ the guard noticing that whole service — a regression that makes the suite *qui
 neither `SUPERUSER` nor `BYPASSRLS`, and that the policies under test are `FORCE`d. Without that,
 a credentials change quietly neuters every isolation assertion in the file — which is exactly
 what happened.
+
+## What the first real run found
+
+Five red CI runs before a green one, and every failure was a defect the suite existed to expose.
+Worth listing, because "we turned the tests on and they passed" would have been the more
+suspicious outcome.
+
+| Found | Where |
+| --- | --- |
+| `KafkaEventBus.connect` assigned the producer *before* starting it, so a broker briefly unavailable at boot became permanent: `is_connected` reported true for a producer that had never connected, and `connect` returns early when one is set, making every retry a no-op | production code |
+| `migrations/env.py` overwrote `sqlalchemy.url` unconditionally, so Alembic could not be pointed at any database but the settings one — and the migration tests silently downgraded the shared CI schema instead of their throwaway one | production code |
+| `test_review_decisions_apply` had been skipping on every run since it was written; its pair scored 4.94 against a lower threshold of 6.0, so `decide_review` had never once executed | test |
+| The migrated-schema check put `index_sync_state` in `platform`; it is created in `public`, so a correctly migrated database was declared unmigrated | test |
+| The outbox idempotence test wrote without setting `app.tenant_id` and the policy's `WITH CHECK` refused it — it had only ever passed against the RLS-free table the file used to create for itself | test |
+| `SELECT :n::int` — PostgreSQL's `::` cast collides with SQLAlchemy's `:name` bind parameter | test |
+| Two tests killed "another" connection, but with a warm pool and sequential checkouts there frequently is no other connection: the statement terminated the backend running it | test |
 
 ## Running it
 
@@ -83,7 +99,7 @@ the migrated tables — the only conditions under which the RLS tests mean anyth
 In CI, the `integration` job starts all five services and runs:
 
 ```bash
-pytest tests -q -rs -m integration --integration-min=50
+pytest tests -q -rs -m integration --integration-min=54
 ```
 
 `-rs` prints the reason for every skip. Without it a run that touched nothing reads as success.
