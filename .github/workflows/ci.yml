@@ -145,14 +145,36 @@ jobs:
           -- for several runs. NOSUPERUSER and NOBYPASSRLS are what matter for the isolation
           -- the tests exist to prove; database-level CREATE does not weaken either.
           GRANT CREATE ON DATABASE cip TO cip_app;
-          GRANT USAGE, CREATE ON SCHEMA public TO cip_app;
-          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO cip_app;
-          GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO cip_app;
+          -- Every schema the migrations create, not just public. Migration 0001 creates
+          -- `platform`, and granting only on `public` left the role unable to use it — which
+          -- surfaced as "permission denied for schema platform" on 50 of the fixtures.
+          DO $$
+          DECLARE s record;
+          BEGIN
+            FOR s IN
+              SELECT nspname FROM pg_namespace
+              WHERE nspname NOT LIKE 'pg\_%' AND nspname <> 'information_schema'
+            LOOP
+              EXECUTE format('GRANT USAGE, CREATE ON SCHEMA %I TO cip_app', s.nspname);
+              EXECUTE format(
+                'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO cip_app',
+                s.nspname);
+              EXECUTE format(
+                'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA %I TO cip_app', s.nspname);
+            END LOOP;
+          END $$;
+          -- Ownership, so FORCE ROW LEVEL SECURITY applies to this role. A non-owner is subject
+          -- to policies anyway; an owner is only subject to them under FORCE, which the
+          -- migrations set. Reassigning keeps the role's relationship to the tables identical to
+          -- production's.
           DO $$
           DECLARE r record;
           BEGIN
-            FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP
-              EXECUTE format('ALTER TABLE public.%I OWNER TO cip_app', r.tablename);
+            FOR r IN
+              SELECT schemaname, tablename FROM pg_tables
+              WHERE schemaname NOT LIKE 'pg\_%' AND schemaname <> 'information_schema'
+            LOOP
+              EXECUTE format('ALTER TABLE %I.%I OWNER TO cip_app', r.schemaname, r.tablename);
             END LOOP;
           END $$;
           SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = 'cip_app';
