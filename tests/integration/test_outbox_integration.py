@@ -113,9 +113,18 @@ class TestAtomicity:
     async def test_appending_the_same_event_id_twice_is_idempotent(
         self, pg_sessions: async_sessionmaker
     ) -> None:
-        event = OutboxEvent(event_type="e", tenant_id=uuid.uuid4(), partition_key="p")
+        tenant = uuid.uuid4()
+        event = OutboxEvent(event_type="e", tenant_id=tenant, partition_key="p")
         for _ in range(2):
             async with pg_sessions() as session:
+                # The tenant context is set because the policy's WITH CHECK half refuses an
+                # insert whose tenant_id does not match `app.tenant_id`. This test used to write
+                # without it, and passed — because the file created its own copy of the table
+                # with no RLS at all. Against the migrated table the policy refuses it, which is
+                # the policy working: every production append path must set the context.
+                await session.execute(
+                    text("SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant)}
+                )
                 await append_to_outbox(session, event)
                 await session.commit()
 

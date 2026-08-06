@@ -29,7 +29,8 @@ import uuid
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import ProgrammingError
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from cip_core.db.postgres import PostgresManager
 from cip_core.models import Document, IngestionStatus
@@ -336,7 +337,12 @@ class TestConnectionPoolBoundaries:
 
         async def one(index: int) -> int:
             async with pg.tenant_session(context) as session:
-                value = (await session.execute(text("SELECT :n::int"), {"n": index})).scalar_one()
+                # CAST(), not `:n::int`. PostgreSQL's `::` cast collides with the `:name` bind
+                # parameter syntax SQLAlchemy expands before asyncpg sees the statement, and the
+                # server receives a literal colon: "syntax error at or near :".
+                value = (
+                    await session.execute(text("SELECT CAST(:n AS INTEGER)"), {"n": index})
+                ).scalar_one()
             return int(value)
 
         async with asyncio.timeout(60):
@@ -344,7 +350,7 @@ class TestConnectionPoolBoundaries:
         assert results == list(range(40))
 
     async def test_a_connection_killed_mid_transaction_commits_nothing(
-        self, pg: PostgresManager, pg_engine: AsyncEngine, context: TenantContext
+        self, pg: PostgresManager, postgres_dsn: str, context: TenantContext
     ) -> None:
         """Connection loss, caused rather than waited for.
 
@@ -352,25 +358,40 @@ class TestConnectionPoolBoundaries:
         to an in-flight transaction. The write must not be there afterwards: a partially applied
         transaction that survives a dropped connection is data corruption no retry detects,
         because the retry writes the same row again and both look correct.
+
+        The executioner gets its **own engine**, not a connection from the pool under test. Two
+        reasons, and the second is why the first attempt failed: killing a backend from the same
+        pool disturbs the pool doing the killing, and in production the thing that drops your
+        connection is never your own pool.
         """
         from sqlalchemy.exc import DBAPIError
 
         content_hash = "9" * 64
-        # DBAPIError, not Exception: a terminated backend surfaces as a driver-level error, and
-        # accepting anything would let a typo in this test pass as "the connection died".
-        with pytest.raises(DBAPIError):
-            async with pg.tenant_session(context) as session:
-                await DocumentRepository(session).add(
-                    _document(context.tenant_id, content_hash), context=context
-                )
-                await session.flush()  # the row exists in this transaction, uncommitted
-                pid = (await session.execute(text("SELECT pg_backend_pid()"))).scalar_one()
+        executioner = create_async_engine(postgres_dsn, poolclass=NullPool)
+        try:
+            # DBAPIError, not Exception: a terminated backend surfaces as a driver-level error,
+            # and accepting anything would let a typo in this test pass as "the connection died".
+            with pytest.raises(DBAPIError):
+                async with pg.tenant_session(context) as session:
+                    await DocumentRepository(session).add(
+                        _document(context.tenant_id, content_hash), context=context
+                    )
+                    await session.flush()  # the row exists in this transaction, uncommitted
+                    pid = (await session.execute(text("SELECT pg_backend_pid()"))).scalar_one()
 
-                async with pg_engine.connect() as killer:
-                    await killer.execute(text("SELECT pg_terminate_backend(:pid)"), {"pid": pid})
-                    await killer.commit()
+                    # Outside pytest.raises' reach in spirit: if this call itself failed, the
+                    # test would pass for the wrong reason, so its result is asserted.
+                    async with executioner.begin() as killer:
+                        killed = (
+                            await killer.execute(
+                                text("SELECT pg_terminate_backend(:pid)"), {"pid": pid}
+                            )
+                        ).scalar_one()
+                    assert killed is True, f"backend {pid} was not terminated; nothing was tested"
 
-                await session.execute(text("SELECT 1"))  # the connection is gone
+                    await session.execute(text("SELECT 1"))  # the connection is gone
+        finally:
+            await executioner.dispose()
 
         async with pg.tenant_session(context) as session:
             survived = await DocumentRepository(session).find_by_content_hash(
