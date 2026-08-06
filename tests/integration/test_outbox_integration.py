@@ -56,12 +56,20 @@ CREATE TABLE IF NOT EXISTS outbox_events (
 
 @pytest.fixture
 async def engine() -> AsyncIterator[AsyncEngine]:
+    """The migrated table, emptied between tests.
+
+    Created by migration 0002 in CI, **with row-level security enforced**. The table is not
+    dropped and recreated here: recreating it without RLS would run every test in this file under
+    conditions production never has, and that is exactly how the relay's missing
+    ``app.outbox_relay`` reached CI in the first place.
+    """
     settings: PostgresSettings = get_settings().postgres
     created = create_async_engine(settings.dsn(), pool_pre_ping=True)
     try:
         async with created.begin() as connection:
-            await connection.execute(text(_CREATE))
-            await connection.execute(text("TRUNCATE outbox_events"))
+            await connection.execute(text(_CREATE))  # a no-op once the migration has run
+            await connection.execute(text("SET LOCAL app.outbox_relay = 'on'"))
+            await connection.execute(text("DELETE FROM outbox_events"))
     except Exception as exc:
         await created.dispose()
         pytest.skip(f"PostgreSQL is not reachable: {type(exc).__name__}: {exc}")
@@ -69,7 +77,8 @@ async def engine() -> AsyncIterator[AsyncEngine]:
     yield created
 
     async with created.begin() as connection:
-        await connection.execute(text("DROP TABLE IF EXISTS outbox_events"))
+        await connection.execute(text("SET LOCAL app.outbox_relay = 'on'"))
+        await connection.execute(text("DELETE FROM outbox_events"))
     await created.dispose()
 
 
@@ -95,12 +104,22 @@ class _Broker:
 
 
 async def _append(sessions: async_sessionmaker, **kwargs: object) -> OutboxEvent:
+    """Append the way application code must: inside a tenant-scoped transaction.
+
+    The ``WITH CHECK`` half of the isolation policy refuses an insert whose ``tenant_id`` does not
+    match ``app.tenant_id``, so a writer that never sets the context cannot write at all. That is
+    the policy working as designed, and every production append path has to set it.
+    """
+    tenant = kwargs.pop("tenant_id", uuid.uuid4())
     async with sessions() as session:
+        await session.execute(
+            text("SELECT set_config('app.tenant_id', :tenant, true)"), {"tenant": str(tenant)}
+        )
         event = await append_to_outbox(
             session,
             OutboxEvent(
                 event_type=kwargs.pop("event_type", "patient.admitted"),  # type: ignore[arg-type]
-                tenant_id=kwargs.pop("tenant_id", uuid.uuid4()),  # type: ignore[arg-type]
+                tenant_id=tenant,  # type: ignore[arg-type]
                 partition_key=kwargs.pop("partition_key", "p-1"),  # type: ignore[arg-type]
                 payload=kwargs.pop("payload", {}),  # type: ignore[arg-type]
             ),
@@ -120,14 +139,19 @@ class TestAtomicity:
         local = create_async_engine(settings.dsn())
         factory = async_sessionmaker(bind=local, expire_on_commit=False)
         try:
+            tenant = uuid.uuid4()
             async with factory() as session:
+                await session.execute(
+                    text("SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant)}
+                )
                 await append_to_outbox(
                     session,
-                    OutboxEvent(event_type="e", tenant_id=uuid.uuid4(), partition_key="p"),
+                    OutboxEvent(event_type="e", tenant_id=tenant, partition_key="p"),
                 )
                 await session.rollback()
 
             async with factory() as session:
+                await session.execute(text("SET LOCAL app.outbox_relay = 'on'"))
                 count = (
                     await session.execute(text("SELECT count(*) FROM outbox_events"))
                 ).scalar_one()
@@ -145,6 +169,7 @@ class TestAtomicity:
                 await session.commit()
 
         async with sessions() as session:
+            await session.execute(text("SET LOCAL app.outbox_relay = 'on'"))
             count = (await session.execute(text("SELECT count(*) FROM outbox_events"))).scalar_one()
         assert count == 1
 
@@ -176,6 +201,7 @@ class TestConcurrentPublishers:
         )
 
         async with sessions() as session:
+            await session.execute(text("SET LOCAL app.outbox_relay = 'on'"))
             remaining = (
                 await session.execute(
                     text("SELECT count(*) FROM outbox_events WHERE status = 'pending'")
@@ -215,6 +241,7 @@ class TestOrderingInSql:
 
         # Put the head into a long backoff, as a transient failure would.
         async with sessions() as session:
+            await session.execute(text("SET LOCAL app.outbox_relay = 'on'"))
             await session.execute(
                 text(
                     "UPDATE outbox_events SET next_attempt_at = :later, attempts = 1 "
@@ -256,6 +283,7 @@ class TestCrashRecovery:
         assert await OutboxPublisher(store, broker).drain_once() == 1
 
         async with sessions() as session:
+            await session.execute(text("SET LOCAL app.outbox_relay = 'on'"))
             status = (
                 await session.execute(text("SELECT status FROM outbox_events LIMIT 1"))
             ).scalar_one()
@@ -284,55 +312,18 @@ class TestCrashRecovery:
 class TestRelayUnderRowLevelSecurity:
     """Regression: the relay must opt into its own policy or it sees nothing.
 
-    Found by adversarial review, not by a test. The migration enables FORCE ROW LEVEL SECURITY
-    with a tenant-isolation policy keyed on `app.tenant_id`; the relay is cross-tenant and cannot
-    set one. Without opting into the relay policy it claims **zero rows, forever**, and the only
-    symptom is a backlog that never drains — no error, no exception, nothing in a log.
+    Found by adversarial review rather than by a test. The migration enables FORCE ROW LEVEL
+    SECURITY with a tenant-isolation policy keyed on ``app.tenant_id``; the relay is cross-tenant
+    and cannot set one. Without opting into the relay policy it claims **zero rows, forever** —
+    no error, no exception, just a backlog that never drains.
 
-    The earlier tests in this file create the table without RLS, so none of them could catch it.
+    These run against the migrated table, so RLS is enforced exactly as in production.
     """
 
-    @pytest.fixture
-    async def secured(self, engine: AsyncEngine) -> AsyncIterator[None]:
-        async with engine.begin() as connection:
-            await connection.execute(text("ALTER TABLE outbox_events ENABLE ROW LEVEL SECURITY"))
-            await connection.execute(text("ALTER TABLE outbox_events FORCE ROW LEVEL SECURITY"))
-            await connection.execute(
-                text(
-                    "CREATE POLICY tenant_isolation_outbox_events ON outbox_events "
-                    "USING (tenant_id = current_setting('app.tenant_id', true)::uuid) "
-                    "WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid)"
-                )
-            )
-            await connection.execute(
-                text(
-                    "CREATE POLICY relay_reads_all_outbox_events ON outbox_events "
-                    "FOR ALL TO PUBLIC "
-                    "USING (current_setting('app.outbox_relay', true) = 'on') "
-                    "WITH CHECK (current_setting('app.outbox_relay', true) = 'on')"
-                )
-            )
-        yield
-        async with engine.begin() as connection:
-            await connection.execute(
-                text("DROP POLICY IF EXISTS relay_reads_all_outbox_events ON outbox_events")
-            )
-            await connection.execute(
-                text("DROP POLICY IF EXISTS tenant_isolation_outbox_events ON outbox_events")
-            )
-            await connection.execute(text("ALTER TABLE outbox_events DISABLE ROW LEVEL SECURITY"))
-
     async def test_the_relay_claims_rows_with_rls_enforced(
-        self, sessions: async_sessionmaker, secured: None
+        self, sessions: async_sessionmaker
     ) -> None:
-        tenant = uuid.uuid4()
-        async with sessions() as session:
-            await session.execute(text("SELECT set_config('app.outbox_relay', 'on', false)"))
-            await append_to_outbox(
-                session,
-                OutboxEvent(event_type="e", tenant_id=tenant, partition_key="p"),
-            )
-            await session.commit()
+        await _append(sessions, partition_key="p")
 
         broker = _Broker()
         published = await OutboxPublisher(PostgresOutboxStore(sessions), broker).drain_once()
@@ -343,18 +334,12 @@ class TestRelayUnderRowLevelSecurity:
         )
 
     async def test_an_application_session_sees_only_its_own_tenant(
-        self, sessions: async_sessionmaker, secured: None
+        self, sessions: async_sessionmaker
     ) -> None:
         """The isolation the policy exists for, checked in the same conditions."""
         mine, theirs = uuid.uuid4(), uuid.uuid4()
-        async with sessions() as session:
-            await session.execute(text("SELECT set_config('app.outbox_relay', 'on', false)"))
-            for tenant in (mine, theirs):
-                await append_to_outbox(
-                    session,
-                    OutboxEvent(event_type="e", tenant_id=tenant, partition_key=str(tenant)),
-                )
-            await session.commit()
+        for tenant in (mine, theirs):
+            await _append(sessions, tenant_id=tenant, partition_key=str(tenant))
 
         async with sessions() as session:
             await session.execute(

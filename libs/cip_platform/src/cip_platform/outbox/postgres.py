@@ -61,20 +61,19 @@ __all__ = ["PostgresOutboxStore", "append_to_outbox"]
 
 _log = get_logger(__name__)
 
-_COLUMNS = (
-    "event_id, sequence_id, event_type, tenant_id, partition_key, aggregate_type, "
-    "aggregate_id, correlation_id, traceparent, status, attempts, created_at, "
-    "next_attempt_at, published_at, last_error, payload"
-)
-
-_CLAIM_SQL = text(f"""
+# Written out in full rather than assembled from a constant. An f-string here is provably safe
+# — the interpolated value is a module-level literal — but it reads as dynamic SQL to a human and
+# to bandit, and a query a reader has to prove safe is worse than one that obviously is.
+_CLAIM_SQL = text("""
 WITH heads AS (
     SELECT DISTINCT ON (partition_key) event_id, next_attempt_at
     FROM outbox_events
     WHERE status = 'pending'
     ORDER BY partition_key, sequence_id
 )
-SELECT {_COLUMNS}
+SELECT event_id, sequence_id, event_type, tenant_id, partition_key, aggregate_type,
+       aggregate_id, correlation_id, traceparent, status, attempts, created_at,
+       next_attempt_at, published_at, last_error, payload
 FROM outbox_events
 WHERE event_id IN (SELECT event_id FROM heads WHERE next_attempt_at <= :now)
 ORDER BY sequence_id
