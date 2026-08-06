@@ -22,6 +22,7 @@ topology and is W1 work.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from typing import Any
 
@@ -80,12 +81,21 @@ class KafkaEventBus:
         ``enable_idempotence`` makes a retried publish safe: without it, a produce that succeeds
         but whose acknowledgement is lost is retried and duplicated, and a duplicate clinical
         event is a duplicate downstream action.
+
+        A failed ``start()`` leaves nothing behind. Assigning ``self._producer`` before starting
+        it — as this did until W6 — makes a broker that is briefly unavailable at boot
+        permanent: ``is_connected`` reports true for a producer that never connected, and
+        because ``connect`` returns early when ``_producer`` is set, every retry is a no-op. The
+        process then publishes nothing for the rest of its life while reporting itself connected,
+        and the outbox relay marks rows published against a cluster it never reached. Found by
+        ``test_publishing_to_an_unreachable_broker_fails_rather_than_silently_dropping``, which
+        is the first test to have ever pointed this class at a closed port.
         """
         if self._producer is not None:
             return
         from aiokafka import AIOKafkaProducer
 
-        self._producer = AIOKafkaProducer(
+        producer = AIOKafkaProducer(
             bootstrap_servers=self._bootstrap,
             client_id=self._client_id,
             acks=self._acks,
@@ -94,7 +104,15 @@ class KafkaEventBus:
             value_serializer=lambda value: json.dumps(value, sort_keys=True).encode(),
             key_serializer=lambda key: key.encode() if isinstance(key, str) else key,
         )
-        await self._producer.start()
+        try:
+            await producer.start()
+        except BaseException:
+            # BaseException, not Exception: a cancelled startup — a shutdown signal during boot
+            # — must not leak the producer's own background tasks either.
+            with contextlib.suppress(Exception):
+                await producer.stop()
+            raise
+        self._producer = producer
         _log.info("events.kafka_connected", bootstrap=self._bootstrap)
 
     async def aclose(self) -> None:

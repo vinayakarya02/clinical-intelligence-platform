@@ -96,6 +96,18 @@ class TestTextParser:
             TextParser().parse(b"   \n\n   \t\n")
 
 
+def _poppler_is_installed() -> bool:
+    """Whether `pdftoppm` is on PATH — a fact about the machine, not about our code.
+
+    `pdf2image` shells out to Poppler, so this is the same thing it would discover, decided
+    without running the parser. That independence is the whole point: a condition derived from
+    the code under test cannot distinguish "not installed" from "broken".
+    """
+    import shutil
+
+    return shutil.which("pdftoppm") is not None
+
+
 class TestPdfParser:
     def _parser(self, **kwargs: object) -> PdfParser:
         defaults: dict[str, object] = {"ocr_enabled": False, "ocr_engine": NullOcrEngine()}
@@ -135,13 +147,24 @@ class TestPdfParser:
         assert any("OCR engine" in warning for warning in parsed.warnings)
 
     def test_scanned_page_is_recovered_by_ocr(self) -> None:
+        """Gap M-2, fixed in W6: this used to skip on ``engine.calls == 0``.
+
+        That condition is the *outcome of the code under test*. A regression that stopped calling
+        the OCR engine at all — the exact failure this test exists to catch — reported "skipped"
+        under a green tick. A test whose pass and its most important failure are indistinguishable
+        is worse than no test, because it occupies the space where a real one would go.
+
+        Whether Poppler is installed is a fact about the machine, so it is now decided *before*
+        the parser runs and from something the parser cannot influence.
+        """
+        if not _poppler_is_installed():
+            pytest.skip("PDF rasterisation requires Poppler, which is not installed")
+
         engine = StubOcrEngine(text="OCR RECOVERED TEXT\nScanned content.", confidence=0.88)
         parser = self._parser(ocr_enabled=True, ocr_engine=engine)
         parsed = parser.parse(build_scanned_pdf())
 
-        if engine.calls == 0:
-            pytest.skip("PDF rasterisation requires Poppler, which is not installed")
-
+        assert engine.calls == 1, "the OCR engine was never invoked for a scanned page"
         assert parsed.ocr_page_count == 1
         assert "OCR RECOVERED TEXT" in parsed.text
         assert parsed.mean_ocr_confidence == pytest.approx(0.88)

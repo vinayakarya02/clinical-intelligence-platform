@@ -814,15 +814,35 @@ class TestEmpi:
             )
 
     def test_review_decisions_apply(self) -> None:
+        """Gap M-2, fixed in W6: this used to skip when the pair missed the review band.
+
+        Landing in the review band is the *outcome of the matching model* — the code under test.
+        A weight change that stopped producing review tasks at all would have reported "skipped",
+        and a steward queue that silently emptied is a defect nobody would find by reading a
+        green test run.
+
+        The inputs are fixed and the model is deterministic, so the band is now asserted. If a
+        weight change moves this pair out of it, that is a real change in matching behaviour and
+        the failure says so rather than hiding it.
+
+        **The inputs also had to change.** The old pair scored 4.94 against a lower threshold of
+        6.0 — a clear NON_MATCH — so the skip fired on every run and ``decide_review`` had never
+        executed since the test was written. These inputs score ~9.8 in a band of 6.0 to 16.0:
+        same surname, address, and phone; different given name, birth date, and sex. A sibling,
+        or one person entered twice with errors. Nothing decides that but a human, which is what
+        the review queue is for.
+        """
         empi = EmpiIndex()
         first = empi.ingest(self._record("r1"))
         second = empi.ingest(
-            self._record(
-                "r2", given="Annabelle", birth=dt.date(1955, 11, 4), postal="02199", phone=""
-            )
+            self._record("r2", given="Annabelle", birth=dt.date(1955, 11, 4), sex="male")
         )
-        if not second.needs_review:
-            pytest.skip("this pair did not land in the review band")
+
+        assert second.needs_review, (
+            "this pair no longer lands in the review band — the matching model changed, and "
+            "the steward path below is no longer exercised by these inputs"
+        )
+        assert second.review_task_id, "a pair needing review produced no review task"
         empi.decide_review(
             second.review_task_id, ReviewDecision.SAME_PERSON, decided_by="steward:kim"
         )

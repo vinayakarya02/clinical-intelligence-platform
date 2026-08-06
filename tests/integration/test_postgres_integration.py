@@ -1,52 +1,42 @@
 """Integration tests against live PostgreSQL.
 
-These cover what the in-memory suite structurally cannot: Row-Level Security policies,
-JSONB behaviour, and the migration itself. They run only when ``CIP_RUN_INTEGRATION=1``
-and a PostgreSQL instance is reachable (``make services-up``).
+These cover what the in-memory suite structurally cannot: the Row-Level Security policies the
+migrations create, JSONB behaviour, transaction boundaries, and concurrency. They run only when
+``CIP_RUN_INTEGRATION=1`` and a PostgreSQL instance is reachable.
 
-RLS is the reason this file exists. ADR-0003 makes it the *database-enforced floor* of
-tenant isolation — the layer that holds when application code forgets a filter — and that
-guarantee cannot be verified anywhere except a real PostgreSQL server.
+RLS is why this file exists. ADR-0003 makes it the *database-enforced floor* of tenant isolation
+— the layer that holds when application code forgets a filter — and that guarantee cannot be
+verified anywhere except a real server.
+
+**Rewritten in Phase 9 W6.** Two things were wrong, and both meant the file proved less than it
+claimed:
+
+- Its fixture created the schema and dropped it again, including ``DROP SCHEMA platform
+  CASCADE``. Run after ``alembic upgrade``, the first teardown destroyed the migrated schema and
+  every subsequent test errored — reported as a skip, under a green tick.
+- Its RLS tests **created their own policy** before asserting on it. They therefore tested a
+  policy the test had just written, and the migration's policy — the one production runs — was
+  never exercised at all.
+
+Both are fixed by the shared fixtures in ``conftest.py``: the schema comes from the migrations,
+the tests only clean data, and every assertion below is about the real policy.
 """
 
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncIterator
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import ProgrammingError
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine
 
-from cip_core.config import PostgresSettings, get_settings
-from cip_core.db.base import Base
 from cip_core.db.postgres import PostgresManager
 from cip_core.models import Document, IngestionStatus
 from cip_core.tenancy import TenantContext
 from cip_ingestion.repositories import DocumentRepository
 
 pytestmark = pytest.mark.integration
-
-
-@pytest.fixture
-async def pg_engine() -> AsyncIterator[AsyncEngine]:
-    settings: PostgresSettings = get_settings().postgres
-    engine = create_async_engine(settings.dsn(), pool_pre_ping=True)
-    try:
-        async with engine.begin() as connection:
-            await connection.execute(text("CREATE SCHEMA IF NOT EXISTS platform"))
-            await connection.run_sync(Base.metadata.create_all)
-    except Exception as exc:
-        await engine.dispose()
-        pytest.skip(f"PostgreSQL is not reachable: {type(exc).__name__}: {exc}")
-
-    yield engine
-
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.drop_all)
-        await connection.execute(text("DROP SCHEMA IF EXISTS platform CASCADE"))
-    await engine.dispose()
 
 
 @pytest.fixture
@@ -92,34 +82,65 @@ class TestPostgresConnectivity:
             assert await pg.current_tenant_setting(session) == other_context.tenant_id
 
 
-class TestRowLevelSecurity:
-    """RLS enforcement — the guarantee that only a real PostgreSQL server can prove."""
+class TestTheTestsThemselves:
+    """Whether the conditions the rest of this file assumes actually hold.
 
-    @pytest.fixture(autouse=True)
-    async def _enable_rls(self, pg_engine: AsyncEngine) -> AsyncIterator[None]:
-        async with pg_engine.begin() as connection:
-            await connection.execute(text("ALTER TABLE documents ENABLE ROW LEVEL SECURITY"))
-            await connection.execute(text("ALTER TABLE documents FORCE ROW LEVEL SECURITY"))
-            # Migration 0001 already creates this policy, and CI now runs the migrations before
-            # the suite. The fixture was written against a bare schema built by
-            # `Base.metadata.create_all`, so it collided with "policy already exists" — which
-            # went unnoticed while the whole suite was skipping.
-            await connection.execute(
-                text("DROP POLICY IF EXISTS tenant_isolation_documents ON documents")
-            )
-            await connection.execute(
-                text(
-                    "CREATE POLICY tenant_isolation_documents ON documents "
-                    "USING (tenant_id = current_setting('app.tenant_id', true)::uuid) "
-                    "WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid)"
+    Every isolation assertion below is meaningful only if the connected role is subject to the
+    policies. A superuser bypasses row-level security unconditionally — ``FORCE`` does not change
+    that — so under one, ``test_policy_hides_another_tenants_rows`` passes on an empty table and
+    proves nothing. That is not hypothetical: the CI job connected as a superuser for several
+    runs and every RLS test was silently vacuous while green.
+
+    So the premise is now asserted rather than assumed. A test suite that can be neutralised by
+    the credentials it happens to be given needs to say so out loud.
+    """
+
+    async def test_the_connected_role_is_subject_to_row_level_security(
+        self, pg_engine: AsyncEngine
+    ) -> None:
+        async with pg_engine.connect() as connection:
+            row = (
+                await connection.execute(
+                    text("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user")
                 )
-            )
-        yield
-        async with pg_engine.begin() as connection:
-            await connection.execute(
-                text("DROP POLICY IF EXISTS tenant_isolation_documents ON documents")
-            )
-            await connection.execute(text("ALTER TABLE documents DISABLE ROW LEVEL SECURITY"))
+            ).one()
+        assert not row.rolsuper, (
+            "the suite is connected as a SUPERUSER, which bypasses every RLS policy — "
+            "every isolation assertion in this file is vacuous under this role"
+        )
+        assert not row.rolbypassrls, (
+            "the connected role has BYPASSRLS — every isolation assertion here is vacuous"
+        )
+
+    async def test_the_policies_under_test_are_forced(self, pg_engine: AsyncEngine) -> None:
+        """FORCE is the half that applies the policy to the table's owner.
+
+        The suite owns these tables, exactly as the application role does in production. Without
+        FORCE, ``pg_policies`` still lists every rule while none of them applies to us.
+        """
+        async with pg_engine.connect() as connection:
+            rows = (
+                await connection.execute(
+                    text(
+                        "SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class "
+                        "WHERE relname IN ('documents', 'document_chunks', 'outbox_events')"
+                    )
+                )
+            ).all()
+        assert rows, "none of the RLS-protected tables were found"
+        for row in rows:
+            assert row.relrowsecurity, f"{row.relname} does not have RLS enabled"
+            assert row.relforcerowsecurity, f"{row.relname} does not FORCE RLS for its owner"
+
+
+class TestRowLevelSecurity:
+    """RLS enforcement — the guarantee that only a real PostgreSQL server can prove.
+
+    Every test here runs against the policy **migration 0001 created**, hardened by migration
+    0003. Nothing in this class creates, alters, or drops a policy: a test that writes the rule
+    it is about to check proves only that PostgreSQL applies rules, which was never in doubt.
+
+    """
 
     async def test_policy_hides_another_tenants_rows(
         self, pg: PostgresManager, context: TenantContext, other_context: TenantContext
@@ -266,3 +287,112 @@ class TestConcurrentDuplicateInsert:
                 content_hash, source_system="epic", context=context
             )
         assert found is not None
+
+
+class TestConnectionPoolBoundaries:
+    """What a pool does under the conditions production puts it in.
+
+    A pooled connection is reused across requests, and every one of these tests exists because
+    something *carries over* when it should not — or fails to when it should.
+    """
+
+    async def test_the_tenant_setting_never_leaks_under_concurrency(
+        self, pg: PostgresManager, context: TenantContext, other_context: TenantContext
+    ) -> None:
+        """The sequential version of this passes even if the setting is session-scoped.
+
+        Interleaved, it does not: with a session-scoped ``set_config`` the two tenants take turns
+        on the same pooled connection and each sees whatever the other set last. That is a
+        cross-tenant read caused by nothing but timing, so it appears under load and never in a
+        reproduction.
+        """
+        import asyncio
+
+        async def observe(ctx: TenantContext) -> list[uuid.UUID | None]:
+            seen: list[uuid.UUID | None] = []
+            for _ in range(12):
+                async with pg.tenant_session(ctx) as session:
+                    seen.append(await pg.current_tenant_setting(session))
+                await asyncio.sleep(0)  # yield, so the two interleave on the pool
+            return seen
+
+        mine, theirs = await asyncio.gather(observe(context), observe(other_context))
+
+        assert set(mine) == {context.tenant_id}, f"one tenant observed another's context: {mine}"
+        assert set(theirs) == {other_context.tenant_id}, (
+            f"one tenant observed another's context: {theirs}"
+        )
+
+    async def test_more_concurrent_callers_than_connections_all_complete(
+        self, pg: PostgresManager, context: TenantContext
+    ) -> None:
+        """Saturation must queue, not deadlock.
+
+        A handler that acquires a second connection while holding the first deadlocks the moment
+        demand reaches the pool size — and until then it looks perfectly healthy. Running well
+        past the pool's width is the only way to find out which shape the code has.
+        """
+        import asyncio
+
+        async def one(index: int) -> int:
+            async with pg.tenant_session(context) as session:
+                value = (await session.execute(text("SELECT :n::int"), {"n": index})).scalar_one()
+            return int(value)
+
+        async with asyncio.timeout(60):
+            results = await asyncio.gather(*(one(i) for i in range(40)))
+        assert results == list(range(40))
+
+    async def test_a_connection_killed_mid_transaction_commits_nothing(
+        self, pg: PostgresManager, pg_engine: AsyncEngine, context: TenantContext
+    ) -> None:
+        """Connection loss, caused rather than waited for.
+
+        ``pg_terminate_backend`` reproduces what a failover, an OOM kill, or a pool timeout does
+        to an in-flight transaction. The write must not be there afterwards: a partially applied
+        transaction that survives a dropped connection is data corruption no retry detects,
+        because the retry writes the same row again and both look correct.
+        """
+        from sqlalchemy.exc import DBAPIError
+
+        content_hash = "9" * 64
+        # DBAPIError, not Exception: a terminated backend surfaces as a driver-level error, and
+        # accepting anything would let a typo in this test pass as "the connection died".
+        with pytest.raises(DBAPIError):
+            async with pg.tenant_session(context) as session:
+                await DocumentRepository(session).add(
+                    _document(context.tenant_id, content_hash), context=context
+                )
+                await session.flush()  # the row exists in this transaction, uncommitted
+                pid = (await session.execute(text("SELECT pg_backend_pid()"))).scalar_one()
+
+                async with pg_engine.connect() as killer:
+                    await killer.execute(text("SELECT pg_terminate_backend(:pid)"), {"pid": pid})
+                    await killer.commit()
+
+                await session.execute(text("SELECT 1"))  # the connection is gone
+
+        async with pg.tenant_session(context) as session:
+            survived = await DocumentRepository(session).find_by_content_hash(
+                content_hash, source_system="epic", context=context
+            )
+        assert survived is None, "an uncommitted row survived the loss of its connection"
+
+    async def test_the_pool_recovers_after_a_connection_is_killed(
+        self, pg: PostgresManager, context: TenantContext
+    ) -> None:
+        """A dropped connection must not poison the pool.
+
+        ``pool_pre_ping`` exists so a stale connection is discarded rather than handed out. If it
+        were not enabled, every checkout after a failover would fail once — and the failures
+        would look like an outage lasting exactly as long as the pool's idle connections.
+        """
+        async with pg.tenant_session(context) as session:
+            pid = (await session.execute(text("SELECT pg_backend_pid()"))).scalar_one()
+
+        async with pg.tenant_session(context) as session:
+            await session.execute(text("SELECT pg_terminate_backend(:pid)"), {"pid": pid})
+
+        for _ in range(3):
+            async with pg.tenant_session(context) as session:
+                assert (await session.execute(text("SELECT 1"))).scalar_one() == 1

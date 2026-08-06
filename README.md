@@ -125,8 +125,15 @@ stores — the warehouse contract is exercised against generated extracts, and `
 `503 warehouse-empty` rather than answering every question with zero. Four substitutions are outstanding
 by design and named in the reports rather than papered over: the embedding provider is a
 deterministic lexical baseline, the reranker is a linear feature scorer, the language model is
-a deterministic extractive composer, and **nothing has yet run against real infrastructure** —
-no Redis, no broker, no cluster. The
+a deterministic extractive composer.
+
+**The fourth substitution is now partly retired.** Until Phase 9 W6 nothing had run against real
+infrastructure, and the integration suite that was supposed to prove otherwise had never
+executed — green and inert since Phase 1. CI now starts PostgreSQL, Redis, MongoDB, Neo4j, and
+Kafka and runs 55 tests against them, and a run that reaches none of them fails rather than
+passing quietly. What is still unproven is stated in
+[docs/testing/integration-testing.md](docs/testing/integration-testing.md): managed services,
+Atlas vector search, multi-broker Kafka, Neo4j clustering, Kubernetes, and sustained load. The
 [roadmap](docs/roadmap/implementation-roadmap.md) lists precisely what shipped, what was
 deferred and why.
 
@@ -135,8 +142,11 @@ make install && make services-up && make migrate && make api   # http://localhos
 make check                                                      # lint + type-check + tests
 ```
 
+Against real backing services — `make test-role` is not optional, because it creates the
+non-superuser role without which every row-level-security assertion passes vacuously:
+
 ```bash
-docker compose -f docker/docker-compose.yml up -d
+make services-up && make migrate && make test-role && make test-integration
 ```
 
 ## Why three retrieval modalities
@@ -163,6 +173,7 @@ Full rationale: [ADR-0001](docs/design/adr-0001-hybrid-graph-vector-retrieval.md
 | **Interop service (Phase 6 implementation)** | [services/interop/README.md](services/interop/README.md) |
 | **Analytics service (Phase 7 implementation)** | [services/analytics/README.md](services/analytics/README.md) |
 | **Gateway composition root** | [services/gateway/README.md](services/gateway/README.md) |
+| **Integration testing** (what runs against real infrastructure, and what does not) | [docs/testing/integration-testing.md](docs/testing/integration-testing.md) |
 | Analytics warehouse design | [docs/architecture/11-analytics-warehouse.md](docs/architecture/11-analytics-warehouse.md) |
 | Clinical ecosystem interoperability design | [docs/architecture/10-clinical-ecosystem-interoperability.md](docs/architecture/10-clinical-ecosystem-interoperability.md) |
 | **HL7 v2 / FHIR mapping reference** | [docs/integration/hl7-fhir-mapping.md](docs/integration/hl7-fhir-mapping.md) |

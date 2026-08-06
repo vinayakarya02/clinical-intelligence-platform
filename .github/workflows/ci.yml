@@ -62,7 +62,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
       - name: Test
-        run: pytest tests -q --cov=cip_core --cov=cip_ingestion --cov=cip_retrieval --cov=cip_copilot --cov=cip_platform --cov=cip_gateway --cov-report=term-missing
+        # All nine packages, and a floor. Six were measured before W6; cip_decision,
+        # cip_interop, and cip_analytics were not — three whole services whose coverage nobody
+        # could see, which is indistinguishable from zero until someone looks. `fail_under` is
+        # set just below the current 78% so a regression fails the build rather than showing up
+        # as a smaller number in a report nobody reads.
+        run: >-
+          pytest tests -q
+          --cov=cip_core --cov=cip_platform
+          --cov=cip_ingestion --cov=cip_retrieval --cov=cip_copilot --cov=cip_gateway
+          --cov=cip_decision --cov=cip_interop --cov=cip_analytics
+          --cov-report=term-missing --cov-fail-under=75
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@v4
@@ -101,6 +111,46 @@ jobs:
           --health-cmd "wget -qO- http://localhost:7474 || exit 1"
           --health-interval 15s --health-timeout 10s --health-retries 10
         ports: ["7687:7687", "7474:7474"]
+      # Added in W6. MongoDB is the production vector store (ADR-0009) and the parsed-document
+      # artifact store, and no CI job had ever started one — so every Mongo path in the platform
+      # had only ever run against the in-memory stand-in.
+      mongo:
+        image: mongo:7
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1}).ok'"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+        ports: ["27017:27017"]
+      # Added in W6. Kafka is the event backbone chosen for Phase 9, and W7 shipped an outbox
+      # relay whose entire guarantee is that `send_and_wait` does not return before the broker
+      # has the record. That claim had never been tested against a broker.
+      #
+      # KRaft, so there is no ZooKeeper container. `advertised.listeners` points at localhost
+      # because the client runs on the runner host and connects through the mapped port: a broker
+      # that advertises its container hostname completes the bootstrap and then hands back an
+      # address the client cannot resolve, which fails at produce time rather than connect time.
+      kafka:
+        image: apache/kafka:3.9.0
+        env:
+          KAFKA_NODE_ID: "1"
+          KAFKA_PROCESS_ROLES: broker,controller
+          KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+          KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+          # Single broker, so every replication factor must be 1. The defaults are 3 and the
+          # broker refuses to create its internal topics, which surfaces as a produce that hangs
+          # until the request timeout rather than as a startup failure.
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+          KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+        options: >-
+          --health-cmd "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"
+          --health-interval 15s --health-timeout 10s --health-retries 10
+        ports: ["9092:9092"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -136,49 +186,11 @@ jobs:
       - name: Create the non-superuser application role
         env:
           PGPASSWORD: ci
-        run: |
-          psql -h localhost -U cip -d cip -v ON_ERROR_STOP=1 <<'SQL'
-          CREATE ROLE cip_app LOGIN PASSWORD 'ci_app' NOSUPERUSER NOBYPASSRLS;
-          -- CREATE on the database, because the test fixtures create a schema. Without it the
-          -- role connects, fails on the first DDL with "permission denied for database cip",
-          -- and every integration test *skips* — which is how this suite ran green and inert
-          -- for several runs. NOSUPERUSER and NOBYPASSRLS are what matter for the isolation
-          -- the tests exist to prove; database-level CREATE does not weaken either.
-          GRANT CREATE ON DATABASE cip TO cip_app;
-          -- Every schema the migrations create, not just public. Migration 0001 creates
-          -- `platform`, and granting only on `public` left the role unable to use it — which
-          -- surfaced as "permission denied for schema platform" on 50 of the fixtures.
-          DO $$
-          DECLARE s record;
-          BEGIN
-            FOR s IN
-              SELECT nspname FROM pg_namespace
-              WHERE nspname NOT LIKE 'pg\_%' AND nspname <> 'information_schema'
-            LOOP
-              EXECUTE format('GRANT USAGE, CREATE ON SCHEMA %I TO cip_app', s.nspname);
-              EXECUTE format(
-                'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO cip_app',
-                s.nspname);
-              EXECUTE format(
-                'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA %I TO cip_app', s.nspname);
-            END LOOP;
-          END $$;
-          -- Ownership, so FORCE ROW LEVEL SECURITY applies to this role. A non-owner is subject
-          -- to policies anyway; an owner is only subject to them under FORCE, which the
-          -- migrations set. Reassigning keeps the role's relationship to the tables identical to
-          -- production's.
-          DO $$
-          DECLARE r record;
-          BEGIN
-            FOR r IN
-              SELECT schemaname, tablename FROM pg_tables
-              WHERE schemaname NOT LIKE 'pg\_%' AND schemaname <> 'information_schema'
-            LOOP
-              EXECUTE format('ALTER TABLE %I.%I OWNER TO cip_app', r.schemaname, r.tablename);
-            END LOOP;
-          END $$;
-          SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = 'cip_app';
-          SQL
+        # One file, shared with `make test-role`. It used to be a heredoc that existed only
+        # here, so a developer running the suite locally connected as the superuser the compose
+        # stack creates — and under a superuser every RLS assertion passes without proving
+        # anything. The rationale for each grant lives in the file.
+        run: psql -h localhost -U cip -d cip -v ON_ERROR_STOP=1 -f scripts/create_test_role.sql
       - name: Integration tests
         env:
           CIP_RUN_INTEGRATION: "1"
@@ -193,12 +205,21 @@ jobs:
           CIP_NEO4J__URI: bolt://localhost:7687
           CIP_NEO4J__USER: neo4j
           CIP_NEO4J__PASSWORD: citestpassword
+          CIP_MONGO__URI: mongodb://localhost:27017
+          CIP_MONGO__DATABASE: cip_integration
+          # Flat, like CIP_REDIS_URL: cip_platform reads it directly.
+          CIP_EVENTS_BROKER_URL: localhost:9092
         run: |
           # -rs prints why each test skipped. Without it the job reported "10 skipped" as a
           # success and nothing said the database was never touched — the integration suite was
           # green and inert for several runs, including ones whose summaries claimed RLS had
           # been proven.
-          pytest tests -q -rs -m integration --integration-min=15
+          # 55 integration tests exist and all five services are started above, so the floor is
+          # 50 rather than 15 — close enough to the total that a service quietly dropping out
+          # cannot hide under it. The stronger guard is in tests/conftest.py: with
+          # CIP_RUN_INTEGRATION=1, *any* skip that names an unreachable backing service fails
+          # the run outright, so a floor alone no longer has to carry the weight.
+          pytest tests -q -rs -m integration --integration-min=50
 
   architecture:
     name: architecture validation

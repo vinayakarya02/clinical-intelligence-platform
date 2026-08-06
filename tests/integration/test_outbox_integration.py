@@ -10,6 +10,16 @@ proved. The two properties that only a real database can demonstrate:
   publishes events out of order, and only this test would catch it.
 
 Runs with ``CIP_RUN_INTEGRATION=1`` against the CI Postgres service.
+
+**Rewritten in Phase 9 W6.** This file carried its own ``CREATE TABLE IF NOT EXISTS
+outbox_events``, described as "a no-op once the migration has run". It is only a no-op when the
+migration *did* run. When it had not, the statement quietly created the table **without row-level
+security** — and every isolation assertion below then tested an unprotected table and passed. A
+test that builds its own schema is a test that cannot tell you whether the real schema is right,
+which is the whole reason the suite could stay green while proving nothing.
+
+The schema now comes from ``conftest.py``, which fails rather than skips when the database is
+reachable but unmigrated.
 """
 
 from __future__ import annotations
@@ -17,74 +27,16 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import uuid
-from collections.abc import AsyncIterator
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
-from cip_core.config import PostgresSettings, get_settings
 from cip_platform.outbox.models import OutboxEvent, OutboxStatus
 from cip_platform.outbox.postgres import PostgresOutboxStore, append_to_outbox
 from cip_platform.outbox.publisher import OutboxPublisher, PublisherConfig
 
 pytestmark = pytest.mark.integration
-
-_CREATE = """
-CREATE TABLE IF NOT EXISTS outbox_events (
-    event_id UUID PRIMARY KEY,
-    sequence_id BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,
-    event_type TEXT NOT NULL,
-    tenant_id UUID NOT NULL,
-    partition_key TEXT NOT NULL,
-    aggregate_type TEXT NOT NULL DEFAULT '',
-    aggregate_id TEXT NOT NULL DEFAULT '',
-    correlation_id TEXT NOT NULL DEFAULT '',
-    traceparent TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'pending',
-    attempts INTEGER NOT NULL DEFAULT 0,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    published_at TIMESTAMPTZ,
-    last_error TEXT NOT NULL DEFAULT '',
-    payload JSONB NOT NULL DEFAULT '{}',
-    CONSTRAINT ck_outbox_status CHECK (status IN ('pending', 'published', 'dead')),
-    CONSTRAINT ck_outbox_partition_key CHECK (length(partition_key) > 0)
-)
-"""
-
-
-@pytest.fixture
-async def engine() -> AsyncIterator[AsyncEngine]:
-    """The migrated table, emptied between tests.
-
-    Created by migration 0002 in CI, **with row-level security enforced**. The table is not
-    dropped and recreated here: recreating it without RLS would run every test in this file under
-    conditions production never has, and that is exactly how the relay's missing
-    ``app.outbox_relay`` reached CI in the first place.
-    """
-    settings: PostgresSettings = get_settings().postgres
-    created = create_async_engine(settings.dsn(), pool_pre_ping=True)
-    try:
-        async with created.begin() as connection:
-            await connection.execute(text(_CREATE))  # a no-op once the migration has run
-            await connection.execute(text("SET LOCAL app.outbox_relay = 'on'"))
-            await connection.execute(text("DELETE FROM outbox_events"))
-    except Exception as exc:
-        await created.dispose()
-        pytest.skip(f"PostgreSQL is not reachable: {type(exc).__name__}: {exc}")
-
-    yield created
-
-    async with created.begin() as connection:
-        await connection.execute(text("SET LOCAL app.outbox_relay = 'on'"))
-        await connection.execute(text("DELETE FROM outbox_events"))
-    await created.dispose()
-
-
-@pytest.fixture
-def sessions(engine: AsyncEngine) -> async_sessionmaker:
-    return async_sessionmaker(bind=engine, expire_on_commit=False)
 
 
 class _Broker:
@@ -103,7 +55,7 @@ class _Broker:
         return [v["eventId"] for _, _, v in self.sent]
 
 
-async def _append(sessions: async_sessionmaker, **kwargs: object) -> OutboxEvent:
+async def _append(pg_sessions: async_sessionmaker, **kwargs: object) -> OutboxEvent:
     """Append the way application code must: inside a tenant-scoped transaction.
 
     The ``WITH CHECK`` half of the isolation policy refuses an insert whose ``tenant_id`` does not
@@ -111,7 +63,7 @@ async def _append(sessions: async_sessionmaker, **kwargs: object) -> OutboxEvent
     the policy working as designed, and every production append path has to set it.
     """
     tenant = kwargs.pop("tenant_id", uuid.uuid4())
-    async with sessions() as session:
+    async with pg_sessions() as session:
         await session.execute(
             text("SELECT set_config('app.tenant_id', :tenant, true)"), {"tenant": str(tenant)}
         )
@@ -129,46 +81,45 @@ async def _append(sessions: async_sessionmaker, **kwargs: object) -> OutboxEvent
 
 
 class TestAtomicity:
-    async def test_a_rolled_back_transaction_leaves_no_event(self) -> None:
+    async def test_a_rolled_back_transaction_leaves_no_event(
+        self, pg_sessions: async_sessionmaker
+    ) -> None:
         """The entire point of the pattern, checked directly.
 
         If the append committed independently, a consumer would act on business data that never
         existed — the dual-write, reintroduced from the other direction.
-        """
-        settings: PostgresSettings = get_settings().postgres
-        local = create_async_engine(settings.dsn())
-        factory = async_sessionmaker(bind=local, expire_on_commit=False)
-        try:
-            tenant = uuid.uuid4()
-            async with factory() as session:
-                await session.execute(
-                    text("SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant)}
-                )
-                await append_to_outbox(
-                    session,
-                    OutboxEvent(event_type="e", tenant_id=tenant, partition_key="p"),
-                )
-                await session.rollback()
 
-            async with factory() as session:
-                await session.execute(text("SET LOCAL app.outbox_relay = 'on'"))
-                count = (
-                    await session.execute(text("SELECT count(*) FROM outbox_events"))
-                ).scalar_one()
-            assert count == 0, "the event survived a rolled-back transaction"
-        finally:
-            await local.dispose()
+        Took the shared fixture in W6. It previously built its own pg_engine, so with the database
+        absent it *errored* where every neighbour skipped — the one test in the file whose
+        result depended on whether Postgres happened to be running, reported as a red run that
+        said nothing about the code.
+        """
+        tenant = uuid.uuid4()
+        async with pg_sessions() as session:
+            await session.execute(
+                text("SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant)}
+            )
+            await append_to_outbox(
+                session,
+                OutboxEvent(event_type="e", tenant_id=tenant, partition_key="p"),
+            )
+            await session.rollback()
+
+        async with pg_sessions() as session:
+            await session.execute(text("SET LOCAL app.outbox_relay = 'on'"))
+            count = (await session.execute(text("SELECT count(*) FROM outbox_events"))).scalar_one()
+        assert count == 0, "the event survived a rolled-back transaction"
 
     async def test_appending_the_same_event_id_twice_is_idempotent(
-        self, sessions: async_sessionmaker
+        self, pg_sessions: async_sessionmaker
     ) -> None:
         event = OutboxEvent(event_type="e", tenant_id=uuid.uuid4(), partition_key="p")
         for _ in range(2):
-            async with sessions() as session:
+            async with pg_sessions() as session:
                 await append_to_outbox(session, event)
                 await session.commit()
 
-        async with sessions() as session:
+        async with pg_sessions() as session:
             await session.execute(text("SET LOCAL app.outbox_relay = 'on'"))
             count = (await session.execute(text("SELECT count(*) FROM outbox_events"))).scalar_one()
         assert count == 1
@@ -176,7 +127,7 @@ class TestAtomicity:
 
 class TestConcurrentPublishers:
     async def test_two_relays_never_claim_the_same_row(
-        self, engine: AsyncEngine, sessions: async_sessionmaker
+        self, pg_engine: AsyncEngine, pg_sessions: async_sessionmaker
     ) -> None:
         """`FOR UPDATE SKIP LOCKED`, proved against a real database.
 
@@ -185,12 +136,12 @@ class TestConcurrentPublishers:
         """
         tenant = uuid.uuid4()
         for i in range(40):
-            await _append(sessions, tenant_id=tenant, partition_key=f"p{i}", payload={"i": i})
+            await _append(pg_sessions, tenant_id=tenant, partition_key=f"p{i}", payload={"i": i})
 
         broker = _Broker()
         relays = [
             OutboxPublisher(
-                PostgresOutboxStore(sessions), broker, config=PublisherConfig(batch_size=40)
+                PostgresOutboxStore(pg_sessions), broker, config=PublisherConfig(batch_size=40)
             )
             for _ in range(4)
         ]
@@ -200,7 +151,7 @@ class TestConcurrentPublishers:
             "concurrent relays published the same event more than once"
         )
 
-        async with sessions() as session:
+        async with pg_sessions() as session:
             await session.execute(text("SET LOCAL app.outbox_relay = 'on'"))
             remaining = (
                 await session.execute(
@@ -213,22 +164,24 @@ class TestConcurrentPublishers:
 
 class TestOrderingInSql:
     async def test_only_the_head_of_a_partition_is_claimed(
-        self, sessions: async_sessionmaker
+        self, pg_sessions: async_sessionmaker
     ) -> None:
         tenant = uuid.uuid4()
         for i in range(3):
-            await _append(sessions, tenant_id=tenant, partition_key="same", payload={"i": i})
+            await _append(pg_sessions, tenant_id=tenant, partition_key="same", payload={"i": i})
 
         broker = _Broker()
         publisher = OutboxPublisher(
-            PostgresOutboxStore(sessions), broker, config=PublisherConfig(batch_size=10)
+            PostgresOutboxStore(pg_sessions), broker, config=PublisherConfig(batch_size=10)
         )
         for _ in range(3):
             await publisher.drain_once()
 
         assert [v["payload"]["i"] for _, _, v in broker.sent] == [0, 1, 2]
 
-    async def test_a_backed_off_head_is_not_overtaken(self, sessions: async_sessionmaker) -> None:
+    async def test_a_backed_off_head_is_not_overtaken(
+        self, pg_sessions: async_sessionmaker
+    ) -> None:
         """The ordering bug the query is shaped to prevent.
 
         Moving the `next_attempt_at` filter inside the CTE would make the *second* row the head
@@ -236,11 +189,11 @@ class TestOrderingInSql:
         exercises that query.
         """
         tenant = uuid.uuid4()
-        first = await _append(sessions, tenant_id=tenant, partition_key="same", payload={"i": 0})
-        await _append(sessions, tenant_id=tenant, partition_key="same", payload={"i": 1})
+        first = await _append(pg_sessions, tenant_id=tenant, partition_key="same", payload={"i": 0})
+        await _append(pg_sessions, tenant_id=tenant, partition_key="same", payload={"i": 1})
 
         # Put the head into a long backoff, as a transient failure would.
-        async with sessions() as session:
+        async with pg_sessions() as session:
             await session.execute(text("SET LOCAL app.outbox_relay = 'on'"))
             await session.execute(
                 text(
@@ -255,14 +208,14 @@ class TestOrderingInSql:
             await session.commit()
 
         broker = _Broker()
-        publisher = OutboxPublisher(PostgresOutboxStore(sessions), broker)
+        publisher = OutboxPublisher(PostgresOutboxStore(pg_sessions), broker)
         await publisher.drain_once()
 
         assert broker.sent == [], "an event overtook the backed-off head of its own partition"
 
 
 class TestCrashRecovery:
-    async def test_an_abandoned_claim_is_reclaimed(self, sessions: async_sessionmaker) -> None:
+    async def test_an_abandoned_claim_is_reclaimed(self, pg_sessions: async_sessionmaker) -> None:
         """A relay that dies mid-batch must not strand its rows.
 
         The claim is a row lock rather than a status column precisely for this: a lock dies with
@@ -270,8 +223,8 @@ class TestCrashRecovery:
         nothing ever reclaims.
         """
         tenant = uuid.uuid4()
-        await _append(sessions, tenant_id=tenant, partition_key="p", payload={"i": 0})
-        store = PostgresOutboxStore(sessions)
+        await _append(pg_sessions, tenant_id=tenant, partition_key="p", payload={"i": 0})
+        store = PostgresOutboxStore(pg_sessions)
 
         claim = store.claim(10)
         batch = await claim.__aenter__()
@@ -282,17 +235,17 @@ class TestCrashRecovery:
         broker = _Broker()
         assert await OutboxPublisher(store, broker).drain_once() == 1
 
-        async with sessions() as session:
+        async with pg_sessions() as session:
             await session.execute(text("SET LOCAL app.outbox_relay = 'on'"))
             status = (
                 await session.execute(text("SELECT status FROM outbox_events LIMIT 1"))
             ).scalar_one()
         assert status == OutboxStatus.PUBLISHED.value
 
-    async def test_replay_returns_a_dead_event(self, sessions: async_sessionmaker) -> None:
+    async def test_replay_returns_a_dead_event(self, pg_sessions: async_sessionmaker) -> None:
         tenant = uuid.uuid4()
-        event = await _append(sessions, tenant_id=tenant, partition_key="p")
-        store = PostgresOutboxStore(sessions)
+        event = await _append(pg_sessions, tenant_id=tenant, partition_key="p")
+        store = PostgresOutboxStore(pg_sessions)
 
         broker = _Broker()
         broker.fail_times = 99
@@ -321,12 +274,12 @@ class TestRelayUnderRowLevelSecurity:
     """
 
     async def test_the_relay_claims_rows_with_rls_enforced(
-        self, sessions: async_sessionmaker
+        self, pg_sessions: async_sessionmaker
     ) -> None:
-        await _append(sessions, partition_key="p")
+        await _append(pg_sessions, partition_key="p")
 
         broker = _Broker()
-        published = await OutboxPublisher(PostgresOutboxStore(sessions), broker).drain_once()
+        published = await OutboxPublisher(PostgresOutboxStore(pg_sessions), broker).drain_once()
 
         assert published == 1, (
             "the relay claimed nothing under RLS — it is not opting into its policy, and in "
@@ -334,14 +287,14 @@ class TestRelayUnderRowLevelSecurity:
         )
 
     async def test_an_application_session_sees_only_its_own_tenant(
-        self, sessions: async_sessionmaker
+        self, pg_sessions: async_sessionmaker
     ) -> None:
         """The isolation the policy exists for, checked in the same conditions."""
         mine, theirs = uuid.uuid4(), uuid.uuid4()
         for tenant in (mine, theirs):
-            await _append(sessions, tenant_id=tenant, partition_key=str(tenant))
+            await _append(pg_sessions, tenant_id=tenant, partition_key=str(tenant))
 
-        async with sessions() as session:
+        async with pg_sessions() as session:
             await session.execute(
                 text("SELECT set_config('app.tenant_id', :tenant, false)"), {"tenant": str(mine)}
             )

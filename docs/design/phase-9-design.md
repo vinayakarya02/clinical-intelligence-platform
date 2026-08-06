@@ -236,6 +236,18 @@ RLS is proven for PostgreSQL — as of this session, and only after fixing a sup
 had made every prior run vacuous. The equivalent isolation guarantee in MongoDB, Neo4j, and Redis
 is asserted by architecture documents and by nothing else.
 
+**Resolved in W6, and it was worse than this entry recorded.** The 10 tests were not merely a thin
+slice — they had **never executed**. The fixture's teardown dropped the migrated schema, every
+subsequent test errored, and each error surfaced through a fixture that called `pytest.skip`, so
+the job printed "10 skipped" and exited 0. The RLS tests also created their own policy before
+asserting on it, so even a run that did execute tested a policy the test had just written rather
+than the migration's.
+
+CI now starts all five services and runs 55 tests against them, with a tenant-isolation test per
+backend. A skip means the infrastructure is absent and nothing else; any skip naming an
+unreachable service fails the run. See
+[docs/testing/integration-testing.md](../testing/integration-testing.md).
+
 ---
 
 #### **H-5. Four declared routes return 501, and the Phase 8 check misses it**
@@ -354,8 +366,8 @@ execution in a job holding `security-events: write`.
 
 | # | Gap | Detail |
 |---|---|---|
-| **M-1** | **Coverage measures 6 of 9 packages** | `--cov=` flags omit `cip_decision`, `cip_interop`, `cip_analytics` — **350 tests, 31% of the suite**, coverage never recorded. Flags were never updated as Phases 5–7 landed. No `fail_under` anywhere; nothing gates on coverage. `ci.yml:65` |
-| **M-2** | **Two self-neutering tests** | `tests/unit/test_parsers.py:143` skips based on `engine.calls == 0` — the *outcome of the code under test*. A real regression reports "skipped", not "failed". Same shape at `tests/interop/test_interop.py:825`. These tests cannot fail for the reason they exist. |
+| **M-1** ✅ | **Coverage measures 6 of 9 packages** — *resolved in W6: all nine measured, `--cov-fail-under=75` against a current 77.8%.* | `--cov=` flags omit `cip_decision`, `cip_interop`, `cip_analytics` — **350 tests, 31% of the suite**, coverage never recorded. Flags were never updated as Phases 5–7 landed. No `fail_under` anywhere; nothing gates on coverage. `ci.yml:65` |
+| **M-2** ✅ | **Two self-neutering tests** — *resolved in W6. The EMPI one had been skipping on every run since it was written: its pair scored 4.94 against a lower threshold of 6.0, so `decide_review` had never once executed.* | `tests/unit/test_parsers.py:143` skips based on `engine.calls == 0` — the *outcome of the code under test*. A real regression reports "skipped", not "failed". Same shape at `tests/interop/test_interop.py:825`. These tests cannot fail for the reason they exist. |
 | **M-3** | **Embedding cache is off** | `EmbeddingService` defaults to `NullEmbeddingCache` (`service.py:99`) and `platform.py:119` passes no cache. Every embedding is recomputed. `InMemoryEmbeddingCache` appears only in a demo. |
 | **M-4** | **No pipeline checkpointing** | `ClinicalPipeline` is linear with cooperative cancellation. A failure at stage 9 re-runs 1–8. LangGraph-style checkpointing would make long ingestion resumable. |
 | **M-5** | **No reindex strategy** | Changing the embedding model invalidates every vector. Azure AI Search solves this with index aliases; there is no equivalent plan. Blocks ever replacing the baseline embedder. |
@@ -366,7 +378,7 @@ execution in a job holding `security-events: write`.
 | **M-10** | **DR is documented, never exercised** | `docs/operations/sla-dr.md` states RPO/RTO per store and a cross-region failover runbook. No restore has been executed. A DR plan never run is a document, not a capability. |
 | **M-11** | **No GraphRAG-style global search** | Community detection and hierarchical summarisation absent; cohort-level thematic queries unanswerable. |
 | **M-12** | **No migration Job manifest** | `docker/entrypoint.sh:29` supports a `migrate` role, and no Kubernetes Job or Helm hook invokes it. Schema upgrades have no declared execution path in-cluster. |
-| **M-13** | **Two divergent compose files** | `docker/docker-compose.yml` (full stack, password `devpassword`) and a root `docker-compose.yml` (Phase 1 only, password `change-me`). Two files that can drift; only one is referenced by the Makefile. |
+| **M-13** ✅ | **Two divergent compose files** — *resolved in W6: the root Phase 1 file is deleted and the Makefile passes `-f docker/docker-compose.yml`. It also mattered more than "can drift": only Kafka published a host port, so the integration suite was unrunnable locally.* | `docker/docker-compose.yml` (full stack, password `devpassword`) and a root `docker-compose.yml` (Phase 1 only, password `change-me`). Two files that can drift; only one is referenced by the Makefile. |
 | **M-14** | **No readiness probe on worker or scheduler** | `11-worker-deployment.yaml:63-64` documents the omission; `12-scheduler-deployment.yaml` has neither readiness nor startup probe. A wedged worker stays in the endpoint set. |
 | **M-15** | **No Helm chart or Kustomize overlay** | Raw manifests with hard-coded values — no environment parameterisation. Staging and production cannot differ without editing tracked files. |
 | **M-16** | **Base image pinned by tag, not digest** | `docker/Dockerfile:15-16` explicitly acknowledges this: "Pinned by digest in a real deployment." The scanned image and the shipped image can differ. |

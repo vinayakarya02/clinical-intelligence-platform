@@ -54,6 +54,52 @@ class TestBackendFactories:
         )
         assert type(kafka).__name__ == "KafkaEventBus"
 
+    async def test_a_failed_kafka_connect_leaves_the_bus_disconnected(self, monkeypatch) -> None:
+        """Regression for a W6 finding: a failed ``start()`` used to leave the producer assigned.
+
+        ``connect`` returns early when ``_producer`` is set, so once a boot-time connection
+        failed, every retry became a no-op and ``is_connected`` reported true for a producer that
+        had never reached a broker. The process would then publish nothing for the rest of its
+        life while reporting itself healthy — and the outbox relay would mark rows published
+        against a cluster it never contacted.
+
+        The real ``connect`` runs here; only ``AIOKafkaProducer`` is substituted, so this asserts
+        on the shipped code path rather than on a reimplementation of it. No broker required,
+        which is why it belongs in the unit job: this defect was reachable without one, and
+        nothing had ever pointed the class at a failure.
+        """
+        import aiokafka
+
+        from cip_platform.events.kafka import KafkaEventBus
+
+        starts: list[str] = []
+        stops: list[str] = []
+
+        class _RefusesToStart:
+            def __init__(self, **kwargs: object) -> None:
+                self.kwargs = kwargs
+
+            async def start(self) -> None:
+                starts.append("start")
+                raise OSError("broker unreachable")
+
+            async def stop(self) -> None:
+                stops.append("stop")
+
+        monkeypatch.setattr(aiokafka, "AIOKafkaProducer", _RefusesToStart)
+        bus = KafkaEventBus("localhost:9092")
+
+        with pytest.raises(OSError):
+            await bus.connect()
+
+        assert not bus.is_connected, "a failed connect left the bus reporting itself connected"
+        assert stops == ["stop"], "the half-built producer was never stopped, leaking its tasks"
+        assert (await bus.health_check())["status"] == "down"
+
+        with pytest.raises(OSError):
+            await bus.connect()
+        assert starts == ["start", "start"], "a retry after a failed connect was silently a no-op"
+
     def test_a_backend_without_its_connection_string_is_refused(self) -> None:
         """Raise rather than fall back.
 

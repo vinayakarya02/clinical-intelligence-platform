@@ -35,6 +35,12 @@ x-app-env: &app-env
   CIP_NEO4J__PASSWORD: devpassword
   CIP_OTLP_ENDPOINT: http://otel-collector:4317
 
+# Host ports on every datastore, added in Phase 9 W6. Only Kafka published one before, so
+# `make test-integration` on the host could not reach Postgres, Mongo, Neo4j, or Redis — the
+# stack was reachable from inside the compose network and from nowhere else. The integration
+# suite was therefore unrunnable locally, which is a large part of why it went unnoticed that
+# it was not running in CI either.
+
 services:
   api:
     build:
@@ -85,6 +91,8 @@ services:
 
   postgres:
     image: postgres:16-alpine
+    ports:
+      - "5432:5432"
     environment:
       POSTGRES_USER: cip
       POSTGRES_PASSWORD: devpassword
@@ -99,6 +107,8 @@ services:
 
   mongo:
     image: mongo:7
+    ports:
+      - "27017:27017"
     environment:
       MONGO_INITDB_ROOT_USERNAME: cip
       MONGO_INITDB_ROOT_PASSWORD: devpassword
@@ -112,6 +122,9 @@ services:
 
   neo4j:
     image: neo4j:5-community
+    ports:
+      - "7687:7687"
+      - "7474:7474"
     environment:
       NEO4J_AUTH: neo4j/devpassword
       NEO4J_PLUGINS: '["apoc"]'
@@ -127,6 +140,8 @@ services:
 
   redis:
     image: redis:7-alpine
+    ports:
+      - "6379:6379"
     # maxmemory-policy allkeys-lru: this Redis holds only cache, so evicting under pressure is
     # correct. A Redis that also held queue state would need noeviction, and mixing the two
     # roles in one instance is how a cache eviction silently drops queued work.

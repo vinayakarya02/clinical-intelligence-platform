@@ -211,15 +211,38 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     ``pytest_sessionfinish`` rather than ``pytest_terminal_summary``: only the former can change
     the session's exit status, and a guard that prints an error while exiting 0 reproduces the
     problem it was written to prevent.
+
+    **W6 strengthened this from a count to a count plus a cause.** A floor alone degrades as the
+    suite grows: add twenty tests and a floor of fifteen is satisfied while five whole services
+    sit unreached. So when integration mode is on, any test skipped for an *infrastructure*
+    reason now fails the run outright. A backend that CI is paying to start and that no test
+    touches is the exact condition this workstream exists to remove, and it is invisible in a
+    summary that reads "45 passed, 4 skipped" under a green tick.
     """
     del exitstatus
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is None:
+        return
     minimum = session.config.getoption("--integration-min")
+
+    if os.environ.get("CIP_RUN_INTEGRATION") == "1":
+        from tests.integration.services import unreachable_services
+
+        unreached = unreachable_services()
+        if unreached:
+            print(
+                f"\nERROR: integration mode is on and these services were never reached: "
+                f"{', '.join(unreached)}. Every skip reason is printed above. A backing service "
+                f"that CI starts and no test contacts is not a passing suite — it is an "
+                f"unverified one, and the green tick is what hides that."
+            )
+            session.exitstatus = 1
+
     if not minimum:
         return
-    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
-    passed = len(reporter.stats.get("passed", [])) if reporter else 0
+    passed = len(reporter.stats.get("passed", []))
     if passed < minimum:
-        skipped = len(reporter.stats.get("skipped", [])) if reporter else 0
+        skipped = len(reporter.stats.get("skipped", []))
         print(
             f"\nERROR: {passed} test(s) executed, fewer than the required {minimum}; "
             f"{skipped} skipped. The integration suite did not run — read the skip reasons "
