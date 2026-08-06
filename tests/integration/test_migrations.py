@@ -35,19 +35,24 @@ pytestmark = pytest.mark.integration
 
 #: What migrations 0001 and 0002 must produce between them, schema-qualified.
 #:
-#: Two schemas, not one. The document tables land in ``public``; the control-plane tables land in
-#: ``platform``. Checking only ``public`` would report three tables missing on a database that is
+#: Two schemas, not one. Most tables land in ``public``; ``tenants`` and ``audit_log`` land in
+#: ``platform``. Checking only ``public`` would report two tables missing on a database that is
 #: correctly migrated, and — worse in the other direction — would call a downgrade complete while
 #: the ``platform`` schema still held every row it was supposed to remove.
+#:
+#: Read off the migrations by parsing each ``op.create_table`` call rather than by eye. Guessing
+#: put ``index_sync_state`` in ``platform``, and the fixture then failed every test in the suite
+#: with "PostgreSQL is reachable but not migrated" against a database that was migrated perfectly
+#: well. Verified against the AST, not against a recollection.
 _EXPECTED_TABLES = frozenset(
     {
         "public.documents",
         "public.document_chunks",
         "public.ingestion_runs",
         "public.document_quality_reports",
+        "public.index_sync_state",
         "public.outbox_events",
         "platform.tenants",
-        "platform.index_sync_state",
         "platform.audit_log",
     }
 )
@@ -147,6 +152,44 @@ async def _tables(engine: AsyncEngine) -> set[str]:
             )
         )
         return {row[0] for row in result}
+
+
+def test_the_expected_table_list_matches_the_migrations() -> None:
+    """Keep ``_EXPECTED_TABLES`` honest by reading the migrations rather than trusting the list.
+
+    Reads the migration sources, so it needs no server — but it carries this module's
+    ``integration`` marker and therefore runs in the integration job with everything else.
+
+    A hand-maintained list of what the migrations produce drifts the moment a migration adds a
+    table, and it drifts *silently*: the new table simply is not checked. It has already gone
+    wrong in the other direction too — one table listed under the wrong schema made the fixture
+    declare a correctly migrated database unmigrated, and failed all 55 tests.
+    """
+    import ast
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    created: set[str] = set()
+    for revision in sorted((root / "migrations" / "versions").glob("*.py")):
+        for node in ast.walk(ast.parse(revision.read_text(encoding="utf-8"))):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "create_table"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+            ):
+                schema = "public"
+                for keyword in node.keywords:
+                    if keyword.arg == "schema" and isinstance(keyword.value, ast.Constant):
+                        schema = keyword.value.value
+                created.add(f"{schema}.{node.args[0].value}")
+
+    assert created == set(_EXPECTED_TABLES), (
+        f"the migrations and _EXPECTED_TABLES disagree. "
+        f"Only in the migrations: {sorted(created - set(_EXPECTED_TABLES))}. "
+        f"Only in the list: {sorted(set(_EXPECTED_TABLES) - created)}."
+    )
 
 
 class TestUpgradeFromEmpty:

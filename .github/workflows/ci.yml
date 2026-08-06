@@ -214,12 +214,12 @@ jobs:
           # success and nothing said the database was never touched — the integration suite was
           # green and inert for several runs, including ones whose summaries claimed RLS had
           # been proven.
-          # 55 integration tests exist and all five services are started above, so the floor is
-          # 50 rather than 15 — close enough to the total that a service quietly dropping out
+          # 56 integration tests exist and all five services are started above, so the floor is
+          # 54 rather than 15 — close enough to the total that a service quietly dropping out
           # cannot hide under it. The stronger guard is in tests/conftest.py: with
           # CIP_RUN_INTEGRATION=1, *any* skip that names an unreachable backing service fails
           # the run outright, so a floor alone no longer has to carry the weight.
-          pytest tests -q -rs -m integration --integration-min=50
+          pytest tests -q -rs -m integration --integration-min=54
 
   architecture:
     name: architecture validation

@@ -63,9 +63,9 @@ TENANT_TABLES = (
 #: in the suite for a reason that has nothing to do with the code.
 REQUIRED_TABLES = (
     *TENANT_TABLES,
+    "public.index_sync_state",
     "platform.tenants",
     "platform.audit_log",
-    "platform.index_sync_state",
 )
 
 
