@@ -394,13 +394,23 @@ class TestConnectionPoolBoundaries:
         ``pool_pre_ping`` exists so a stale connection is discarded rather than handed out. If it
         were not enabled, every checkout after a failover would fail once — and the failures
         would look like an outage lasting exactly as long as the pool's idle connections.
+
+        This test read a pid from one session and terminated it from the next, which failed for
+        an instructive reason: **the pool handed the second session the same connection**, so the
+        statement killed the backend running it. That is also why two attempts to kill a
+        connection "from another connection" failed elsewhere in this file — with a warm pool and
+        sequential checkouts, there is frequently no other connection. Terminating the current
+        backend is therefore both simpler and the only version whose target is unambiguous.
         """
-        async with pg.tenant_session(context) as session:
-            pid = (await session.execute(text("SELECT pg_backend_pid()"))).scalar_one()
+        from sqlalchemy.exc import DBAPIError
 
-        async with pg.tenant_session(context) as session:
-            await session.execute(text("SELECT pg_terminate_backend(:pid)"), {"pid": pid})
+        with pytest.raises(DBAPIError):
+            async with pg.tenant_session(context) as session:
+                await session.execute(text("SELECT pg_terminate_backend(pg_backend_pid())"))
+                await session.execute(text("SELECT 1"))
 
-        for _ in range(3):
+        # The pool now holds at least one dead connection. Every checkout after this must work:
+        # `pool_pre_ping` is what discards the corpse instead of handing it to the next caller.
+        for _ in range(5):
             async with pg.tenant_session(context) as session:
                 assert (await session.execute(text("SELECT 1"))).scalar_one() == 1
