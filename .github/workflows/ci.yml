@@ -139,7 +139,13 @@ jobs:
         run: |
           psql -h localhost -U cip -d cip -v ON_ERROR_STOP=1 <<'SQL'
           CREATE ROLE cip_app LOGIN PASSWORD 'ci_app' NOSUPERUSER NOBYPASSRLS;
-          GRANT USAGE ON SCHEMA public TO cip_app;
+          -- CREATE on the database, because the test fixtures create a schema. Without it the
+          -- role connects, fails on the first DDL with "permission denied for database cip",
+          -- and every integration test *skips* — which is how this suite ran green and inert
+          -- for several runs. NOSUPERUSER and NOBYPASSRLS are what matter for the isolation
+          -- the tests exist to prove; database-level CREATE does not weaken either.
+          GRANT CREATE ON DATABASE cip TO cip_app;
+          GRANT USAGE, CREATE ON SCHEMA public TO cip_app;
           GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO cip_app;
           GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO cip_app;
           DO $$
