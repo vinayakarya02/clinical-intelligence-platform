@@ -121,8 +121,11 @@ def _alembic_config(dsn: str) -> object:
     root = __import__("pathlib").Path(__file__).resolve().parents[2]
     config = Config(str(root / "alembic.ini"))
     config.set_main_option("script_location", str(root / "migrations"))
-    # Alembic's sync engine cannot use the asyncpg driver.
-    config.set_main_option("sqlalchemy.url", dsn.replace("+asyncpg", ""))
+    # The DSN keeps its `+asyncpg`. This project's env.py runs migrations through
+    # `async_engine_from_config`, so it needs the async driver; stripping the marker resolves the
+    # URL to psycopg2, which is not a dependency and fails at import with a message about a
+    # missing module rather than about a wrong driver.
+    config.set_main_option("sqlalchemy.url", dsn)
 
     resolved = config.get_main_option("sqlalchemy.url", "")
     database = resolved.rsplit("/", 1)[-1]
