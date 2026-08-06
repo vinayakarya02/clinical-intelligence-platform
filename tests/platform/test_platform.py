@@ -262,7 +262,13 @@ class TestEvents:
         )
         summary = event.audit_summary()
         assert summary["payload_keys"] == ["chunk_id", "text"]
-        assert "5.4" not in str(summary)
+        # Assert on tokens that cannot occur elsewhere in the summary. "5.4" was checked here
+        # and matched inside the ISO timestamp — `...T06:58:45.407...` contains it — so the test
+        # failed roughly one run in a hundred, on CI, for a reason that had nothing to do with
+        # PHI. A flaky assertion about a privacy control is worse than none: it trains readers
+        # to re-run the build.
+        assert "Potassium" not in str(summary)
+        assert "mmol/L" not in str(summary)
 
     async def test_a_non_phi_payload_is_kept(self) -> None:
         event = Event(type=EventType.GRAPH_UPDATED, tenant_id=TENANT_A, payload={"nodes": 3})
