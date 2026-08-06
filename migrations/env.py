@@ -2,6 +2,19 @@
 
 The database URL comes from application settings rather than ``alembic.ini`` so there is
 exactly one source of truth for connection details and no credential in a committed file.
+
+**Unless the caller supplied one.** Until Phase 9 W6 the settings URL was written
+unconditionally, which silently *overwrote* anything a caller had set — so there was no way to
+point Alembic at a different database at all. `alembic -x`, a restored replica, a dry run against
+a copy: none of them worked, and none of them failed either. They ran against production's
+database while appearing to run against the target.
+
+The migration tests found it the expensive way. `tests/integration/test_migrations.py` builds a
+throwaway database per test and sets the URL to it; the override was discarded, so every test ran
+against the **shared CI database** — including ``downgrade base``, which dropped the real schema
+out from under every test that followed. That is the same class of defect as the fixture teardown
+W6 was written to remove, reintroduced through a different door: something that looked like it
+targeted a scratch database and did not.
 """
 
 from __future__ import annotations
@@ -25,8 +38,11 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
-_settings = get_settings()
-config.set_main_option("sqlalchemy.url", _settings.postgres.dsn())
+# An explicit URL wins. Settings are the default, not an override: a caller that went to the
+# trouble of naming a database meant it, and quietly redirecting them to another one is worse
+# than refusing.
+if not config.get_main_option("sqlalchemy.url", ""):
+    config.set_main_option("sqlalchemy.url", get_settings().postgres.dsn())
 
 
 def _include_object(obj: object, name: str | None, type_: str, reflected: bool, _compare) -> bool:  # type: ignore[no-untyped-def]

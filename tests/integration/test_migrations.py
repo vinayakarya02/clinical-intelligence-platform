@@ -104,7 +104,18 @@ async def scratch_database(postgres_dsn: str) -> AsyncIterator[str]:
         await admin.dispose()
 
 
+#: Every throwaway database this module creates. Names are checked before anything destructive
+#: runs, so a configuration change that redirects Alembic elsewhere fails here rather than
+#: downgrading the shared database — which is exactly what happened the first time these tests
+#: ran for real. ``migrations/env.py`` overwrote the URL the tests set, so ``downgrade base``
+#: dropped the live CI schema and every test after it failed on a database that no longer had
+#: the tables. Silent redirection is the whole hazard, so it gets an assertion rather than a
+#: comment.
+_SCRATCH_PREFIX = "cip_mig_"
+
+
 def _alembic_config(dsn: str) -> object:
+    """An Alembic config pointed at ``dsn`` — and verified to have stayed pointed at it."""
     from alembic.config import Config
 
     root = __import__("pathlib").Path(__file__).resolve().parents[2]
@@ -112,6 +123,14 @@ def _alembic_config(dsn: str) -> object:
     config.set_main_option("script_location", str(root / "migrations"))
     # Alembic's sync engine cannot use the asyncpg driver.
     config.set_main_option("sqlalchemy.url", dsn.replace("+asyncpg", ""))
+
+    resolved = config.get_main_option("sqlalchemy.url", "")
+    database = resolved.rsplit("/", 1)[-1]
+    assert database.startswith(_SCRATCH_PREFIX), (
+        f"refusing to run migrations against {database!r}: these tests upgrade and downgrade "
+        f"the database they are given, and anything but a throwaway would be destroyed. "
+        f"Something is overriding the configured URL — check migrations/env.py."
+    )
     return config
 
 
