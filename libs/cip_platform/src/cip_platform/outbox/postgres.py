@@ -168,6 +168,10 @@ class PostgresOutboxStore:
     async def stats(self, *, now: dt.datetime | None = None) -> OutboxStats:
         moment = now or dt.datetime.now(dt.UTC)
         async with self._session_factory() as session:
+            # Every relay operation needs this, not just the claim. Without it RLS filters the
+            # rows and `stats()` reports an empty outbox — which is indistinguishable from a
+            # healthy one, and is exactly the reading an operator would trust during an incident.
+            await session.execute(text("SET LOCAL app.outbox_relay = 'on'"))
             result = await session.execute(
                 text(
                     "SELECT status, count(*) AS n, min(created_at) AS oldest "
@@ -185,6 +189,7 @@ class PostgresOutboxStore:
 
     async def replay(self, event_id: uuid.UUID) -> bool:
         async with self._session_factory() as session:
+            await session.execute(text("SET LOCAL app.outbox_relay = 'on'"))
             result = await session.execute(
                 text(
                     "UPDATE outbox_events SET status = 'pending', attempts = 0, "
