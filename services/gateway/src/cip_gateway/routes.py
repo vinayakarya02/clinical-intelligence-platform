@@ -72,6 +72,8 @@ INTERNAL_SERVICES: dict[str, str] = {
     "cache": "read-through cache applied inside services, not addressable",
     "queue": "background work is enqueued by services; there is no client-facing queue API",
     "events": "the event backbone is published to, not requested",
+    "breakers": "circuit breakers wrap every dependency; their state is reported by health",
+    "outbox": "the relay drains it in the background; nothing addresses it over HTTP",
     "gateway": (
         "authentication, rate limiting, and budget — applied to every route rather than "
         "exposed as one"

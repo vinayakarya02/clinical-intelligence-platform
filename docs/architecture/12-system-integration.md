@@ -269,6 +269,30 @@ the event backbone, and the task queue is Redis rather than Celery
 handler existed. `validate()` now takes the adapter map and reports `unimplemented`; a route
 that cannot be answered fails startup rather than a client.
 
+## 9b. Phase 9 W7 — resilience and the outbox
+
+W0 gave the platform real remote dependencies. W7 makes their failures bounded.
+
+**Circuit breakers, one per dependency.** Sliding failure window, half-open success threshold,
+bounded concurrent probes, per-call timeout, manual reset and trip, health reporting. A shared
+breaker would let a slow Neo4j open the circuit in front of PostgreSQL, so the registry holds one
+instance per dependency and the health surface reports `degraded` rather than `down` — removing
+every replica from the load balancer over a degraded graph is the outage the breaker exists to
+prevent.
+
+**One guarded call path:** `retry(breaker(timeout(operation)))`. The order is the design — timeout
+innermost so a hang becomes a countable failure, breaker inside retry so a rejected call is never
+retried.
+
+**The transactional outbox.** Business data and the intent to publish commit together; a polling
+relay carries the intent to Kafka afterwards. Per-partition ordering, `FOR UPDATE SKIP LOCKED` for
+concurrent relays, retry with exponential backoff, dead-letter for exhausted and poison messages,
+replay for recovery. Rationale, alternatives, and the RLS caveat:
+[ADR-0041](../design/adr-0041-outbox-and-breakers.md).
+
+Measured: breaker overhead 64 µs closed and 4 µs rejecting; the relay sustains ~11,700 events/s
+in-process. The benchmarks assert — the first in this repository that can fail.
+
 ## 10. The lesson, stated plainly
 
 Across Phases 5, 6, 7, and 8 the same pattern held: **the serious defects were found by running

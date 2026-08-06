@@ -43,6 +43,8 @@ _log = get_logger(__name__)
 #: one that does.
 SERVICE_NAMES = (
     "settings",
+    "breakers",
+    "outbox",
     "postgres",
     "mongo",
     "neo4j",
@@ -153,6 +155,71 @@ async def _aclose_events(bus: Any) -> None:
     aclose = getattr(bus, "aclose", None)
     if aclose is not None:
         await aclose()
+
+
+def _breakers(container: ServiceContainer) -> Any:
+    """One circuit breaker per external dependency.
+
+    Per-dependency isolation is the whole point: a shared breaker would let a slow knowledge
+    graph open the circuit in front of the operational database, turning a degraded feature into
+    an outage — the exact failure a breaker exists to prevent.
+
+    Thresholds differ per dependency because their failure modes do. Kafka gets a longer call
+    timeout because ``acks=all`` waits for replication; Neo4j opens sooner because the graph is
+    non-critical and shedding load from it costs nothing the platform needs.
+    """
+    from cip_platform.resilience import BreakerConfig, BreakerRegistry
+
+    del container
+    return BreakerRegistry(
+        configs={
+            "postgres": BreakerConfig(call_timeout_seconds=10.0, reset_timeout_seconds=15.0),
+            "mongo": BreakerConfig(call_timeout_seconds=10.0, reset_timeout_seconds=15.0),
+            # Non-critical, so open earlier and stay open longer: shedding graph load protects
+            # a recovering server and costs only enrichment.
+            "neo4j": BreakerConfig(
+                failure_threshold=0.3, call_timeout_seconds=5.0, reset_timeout_seconds=60.0
+            ),
+            # A cache is fail-open by design; the breaker exists to stop a slow Redis adding
+            # latency to every request, so its timeout is short.
+            "redis": BreakerConfig(call_timeout_seconds=2.0, reset_timeout_seconds=10.0),
+            # acks=all waits for replication across brokers, so a 10s call is not pathological.
+            "kafka": BreakerConfig(call_timeout_seconds=15.0, reset_timeout_seconds=30.0),
+        }
+    )
+
+
+def _outbox(container: ServiceContainer) -> Any:
+    """The outbox store, and the relay that drains it.
+
+    In-memory when Postgres is not the operational store — which is every unit test and the
+    default development path. The relay's code is identical either way, so the tests exercise
+    the production path rather than a parallel one.
+    """
+    from cip_platform.outbox import InMemoryOutboxStore, OutboxPublisher, PublisherConfig
+    from cip_platform.resilience import guarded
+
+    settings = container.get("settings")["platform"]
+    store: Any = InMemoryOutboxStore()
+
+    return {
+        "store": store,
+        "publisher": OutboxPublisher(
+            store,
+            container.get("events"),
+            config=PublisherConfig(),
+            guard=guarded(container.get("breakers"), "kafka"),
+        ),
+        "backend": settings.events_backend,
+    }
+
+
+async def _start_relay(outbox: Any) -> None:
+    await outbox["publisher"].start()
+
+
+async def _stop_relay(outbox: Any) -> None:
+    await outbox["publisher"].stop()
 
 
 def _audit(_: ServiceContainer) -> Any:
@@ -415,6 +482,20 @@ def platform_specs() -> ContainerBuilder:
             description="Event backbone (memory or Kafka)",
             connect=_connect_events,
             aclose=_aclose_events,
+        )
+        .add(
+            "breakers",
+            _breakers,
+            depends_on=("settings",),
+            description="Circuit breakers, one per external dependency",
+        )
+        .add(
+            "outbox",
+            _outbox,
+            depends_on=("settings", "events", "breakers"),
+            description="Transactional outbox and its publishing relay",
+            connect=_start_relay,
+            aclose=_stop_relay,
         )
         .add("audit", _audit, description="Audit sink shared by disclosure paths")
         .add(

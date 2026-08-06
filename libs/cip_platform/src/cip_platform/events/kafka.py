@@ -149,6 +149,21 @@ class KafkaEventBus:
         for future in futures:
             await future
 
+    async def publish_message(self, *, topic: str, key: str, value: dict[str, Any]) -> None:
+        """Publish a pre-built message to a named topic.
+
+        What the outbox relay uses. Separate from :meth:`publish` because the relay carries a
+        row that was serialised when the business transaction committed, not an ``Event`` object
+        — and widening ``publish`` to accept both would blur what an ``Event`` is.
+
+        Waits for the acknowledgement, like ``publish``: a relay that returned before the broker
+        confirmed would mark the outbox row published and the event could still vanish in a
+        failover. The outbox's entire guarantee rests on this call not lying.
+        """
+        if self._producer is None:
+            raise RuntimeError("KafkaEventBus.connect() has not been called")
+        await self._producer.send_and_wait(topic, value=value, key=key)
+
     async def health_check(self) -> dict[str, Any]:
         """Whether the producer has cluster metadata.
 

@@ -17,6 +17,7 @@ from being updated, so failures are isolated and recorded per handler.
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from typing import Any
 
 from cip_core.logging import get_logger
 from cip_platform.events.base import Event, EventHandler, EventType
@@ -43,6 +44,8 @@ class InMemoryEventBus:
         # clinical content indefinitely — a memory leak and a PHI-retention problem at once.
         self._published: deque[Event] = deque(maxlen=history_limit)
         self._failures: deque[tuple[str, str]] = deque(maxlen=history_limit)
+        # Relay-published messages, bounded for the same reason as _published above.
+        self.messages: deque[tuple[str, str, dict[str, Any]]] = deque(maxlen=history_limit)
 
     def subscribe(self, event_type: EventType, handler: EventHandler) -> None:
         self._handlers[event_type].append(handler)
@@ -121,3 +124,11 @@ class InMemoryEventBus:
     def clear(self) -> None:
         self._published.clear()
         self._failures.clear()
+
+    async def publish_message(self, *, topic: str, key: str, value: dict[str, Any]) -> None:
+        """The relay's publish path, in memory.
+
+        Mirrors the Kafka signature so the outbox relay is one implementation and its tests
+        exercise the same code path the production relay runs.
+        """
+        self.messages.append((topic, key, value))
