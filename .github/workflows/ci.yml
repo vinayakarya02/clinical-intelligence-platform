@@ -165,7 +165,12 @@ jobs:
           CIP_NEO4J__URI: bolt://localhost:7687
           CIP_NEO4J__USER: neo4j
           CIP_NEO4J__PASSWORD: citestpassword
-        run: pytest tests -q -m integration
+        run: |
+          # -rs prints why each test skipped. Without it the job reported "10 skipped" as a
+          # success and nothing said the database was never touched — the integration suite was
+          # green and inert for several runs, including ones whose summaries claimed RLS had
+          # been proven.
+          pytest tests -q -rs -m integration --integration-min=15
 
   architecture:
     name: architecture validation

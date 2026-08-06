@@ -184,3 +184,45 @@ async def clean_database(engine: AsyncEngine) -> AsyncIterator[None]:
     async with engine.begin() as connection:
         for table in reversed(Base.metadata.sorted_tables):
             await connection.execute(text(f"DELETE FROM {table.fullname}"))
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--integration-min",
+        type=int,
+        default=0,
+        help=(
+            "Fail the run unless at least this many integration tests actually executed. "
+            "A suite that skips everything and reports success is worse than no suite: it is "
+            "false assurance, and it stays invisible because the job is green."
+        ),
+    )
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Refuse a green run in which the integration suite did nothing.
+
+    Added in Phase 9 W7 after the integration job reported success across several runs while
+    skipping every test: the database was unreachable for a configuration reason, the fixture
+    skipped rather than failed, and the summary read "10 skipped" under a green tick. A suite
+    that skips everything and passes is worse than no suite — it is false assurance, and it
+    stays invisible precisely because the job is green.
+
+    ``pytest_sessionfinish`` rather than ``pytest_terminal_summary``: only the former can change
+    the session's exit status, and a guard that prints an error while exiting 0 reproduces the
+    problem it was written to prevent.
+    """
+    del exitstatus
+    minimum = session.config.getoption("--integration-min")
+    if not minimum:
+        return
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    passed = len(reporter.stats.get("passed", [])) if reporter else 0
+    if passed < minimum:
+        skipped = len(reporter.stats.get("skipped", [])) if reporter else 0
+        print(
+            f"\nERROR: {passed} test(s) executed, fewer than the required {minimum}; "
+            f"{skipped} skipped. The integration suite did not run — read the skip reasons "
+            f"above rather than trusting the exit status."
+        )
+        session.exitstatus = 1
